@@ -55,7 +55,7 @@ num_ues=3 # Number of UEs
 
 # Create an instance of needed objects
 
-# Resource grid
+# Set Resource grid parameters
 resource_grid = sn.ofdm.ResourceGrid( num_ofdm_symbols=14,
                                       fft_size=12*num_resource_blocks,# Number of subcarriers
                                       subcarrier_spacing=1e3*(15*2**numerology), # Subcarrier spacing
@@ -75,7 +75,7 @@ encoder = sn.fec.ldpc.LDPC5GEncoder(k, n)
 mapper = sn.mapping.Mapper("qam", num_bits_per_symbol)  # maps blocks of information bits to constellation symbols
 
 # Resource grid mapper
-rg_mapper = sn.ofdm.ResourceGridMapper(resource_grid)   # maps symbols onto an OFDM resource grid
+resource_grid_mapper = sn.ofdm.ResourceGridMapper(resource_grid)   # maps symbols onto an OFDM resource grid
 
 
 output_frame = tf.zeros([num_slots_per_frame, resource_grid.num_ofdm_symbols, resource_grid.fft_size], dtype=tf.complex64)
@@ -90,7 +90,7 @@ for i in range(num_ues):
     symbols = mapper(codewords)
     
     # Map symbols to resource grid  (add two dimensions to the symbols tensor)
-    symbols_rg = rg_mapper(tf.expand_dims(tf.expand_dims(symbols, axis=1),axis=1))
+    symbols_rg = resource_grid_mapper(tf.expand_dims(tf.expand_dims(symbols, axis=1),axis=1))
     symbols_rg = tf.squeeze(tf.squeeze(symbols_rg, axis=1),axis=1)
     
     # Create a list of unique random indices to select different positions of the replicas
@@ -128,29 +128,46 @@ output_frame[slot, :, :]
 
 
 #%%
-# Create a PUSCH configuration with default settings
-pusch_config = PUSCHConfig()
+# Resource grid
+resource_grid = sn.ofdm.ResourceGrid( num_ofdm_symbols=50,
+                                      fft_size=12*num_resource_blocks,# Number of subcarriers
+                                      subcarrier_spacing=1e3*(15*2**numerology), # Subcarrier spacing
+                                      num_tx=2,
+                                      pilot_pattern="kronecker",
+                                      pilot_ofdm_symbol_indices=[0,2]) 
+resource_grid.pilot_pattern.show()
+pilot=resource_grid.pilot_pattern.pilots
 
-# Instantiate a PUSCHTransmitter from the PUSCHConfig
-pusch_transmitter = PUSCHTransmitter(pusch_config)
 
-# Create a PUSCHReceiver using the PUSCHTransmitter
-pusch_receiver = PUSCHReceiver(pusch_transmitter)
 
-# AWGN channel
-channel = AWGN()
+num_bits_per_symbol = 2 # QPSK
 
-# Simulate transmissions over the AWGN channel
-batch_size = 16
-no = 0.000001 # Noise variance
+binary_source = sn.utils.BinarySource()
 
-x, b = pusch_transmitter(batch_size) # Generate transmit signal and info bits
+mapper = sn.mapping.Mapper("qam", num_bits_per_symbol)
 
-y = channel([x, no]) # Simulate channel output
+# The resource grid mapper maps symbols onto an OFDM resource grid
+rg_mapper = sn.ofdm.ResourceGridMapper(resource_grid)
 
-b_hat = pusch_receiver([y, no]) # Recover the info bits
 
-# Compute BER
-print("BER:", compute_ber(b, b_hat).numpy())
+
+n = int(resource_grid.num_data_symbols*num_bits_per_symbol) # Number of bits to be transmitted
+bits = binary_source([1, resource_grid.num_tx,resource_grid.num_streams_per_tx, n])
+symbols = mapper(bits)
+symbols_rg = rg_mapper(symbols)
+print(f"Resource grid shape: {symbols_rg.shape}")
 #%%
-pusch_config.dmrs_grid.shape
+symbols_rg = tf.squeeze(symbols_rg)
+rg_ue1 = symbols_rg[0, :, :]
+rg_ue2 = symbols_rg[1, :, :]
+# Plot the resource grid of the two UEs
+plt.figure(figsize=(10, 5))
+plt.subplot(1, 2, 1)
+plt.imshow(np.abs(rg_ue1), aspect='auto')
+plt.colorbar()
+plt.title('UE1 Resource Grid')
+plt.subplot(1, 2, 2)
+plt.imshow(np.abs(rg_ue2), aspect='auto')
+plt.colorbar()
+plt.title('UE2 Resource Grid')
+plt.show()

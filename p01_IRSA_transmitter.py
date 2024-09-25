@@ -122,7 +122,7 @@ print(f"Output frame shape: {output_frame.shape}")
 # squeeze the output frame
 print(f"Output frame shape after squeezing: {output_frame.shape}")
 
-slot=1
+slot=0
 output_frame[slot, :, :]
 
 
