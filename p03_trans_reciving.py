@@ -38,51 +38,65 @@ print('sionna version:', sn.__version__)
 # System parameters
 
 # Carrier parameters
-numerology = 0 #    Numerology index
+numerology = 0 # Numerology index
 num_resource_blocks = 1 # Number of resource blocks
-num_slots_per_frame = 2 # Number of slots per frame
-num_ofdm_symbols=14
+num_slots_per_frame = 3 # Number of slots per frame
 
 # Transport block parameters
-num_bits_per_symbol = 2 # QPSK
+num_bits_per_symbol = 4 # QPSK
 coderate = 0.5 # Code rate
-
 
 # IRSA Parameters
 num_frames = 1 # Number of frames
-num_replicas_per_frame = 1 # Number of replicas per frame
-num_ues=2 # Number of UEs
-
+num_replicas_per_frame =2 # Number of replicas per frame
+num_ues = 2 # Number of UEs
 
 # Create an instance of needed objects
 
 # Set Resource grid parameters
-resource_grid = sn.ofdm.ResourceGrid( num_ofdm_symbols=num_ofdm_symbols,
-                                      fft_size=12*num_resource_blocks,# Number of subcarriers
-                                      subcarrier_spacing=1e3*(15*2**numerology), # Subcarrier spacing
-                                      pilot_pattern="kronecker",
-                                      pilot_ofdm_symbol_indices=[0,2]) 
-
+resource_grid = sn.ofdm.ResourceGrid(num_ofdm_symbols=14,
+                                     fft_size=12*num_resource_blocks, # Number of subcarriers
+                                     subcarrier_spacing=1e3*(15*2**numerology), # Subcarrier spacing
+                                     pilot_pattern="kronecker",
+                                     pilot_ofdm_symbol_indices=[0, 2])
 
 # Binary source
 binary_source = sn.utils.BinarySource()
 
 # Encoder
 n = int(resource_grid.num_data_symbols*num_bits_per_symbol) # Number of coded bits in a resource grid
-k = int(n*coderate) # Number of information bits in a resource groud
+k = int(n*coderate) # Number of information bits in a resource grid
 encoder = sn.fec.ldpc.LDPC5GEncoder(k, n)
 
 # QAM Mapper
-mapper = sn.mapping.Mapper("qam", num_bits_per_symbol)  # maps blocks of information bits to constellation symbols
+mapper = sn.mapping.Mapper("qam", num_bits_per_symbol) # maps blocks of information bits to constellation symbols
 
 # Resource grid mapper
-resource_grid_mapper = sn.ofdm.ResourceGridMapper(resource_grid)   # maps symbols onto an OFDM resource grid
+resource_grid_mapper = sn.ofdm.ResourceGridMapper(resource_grid) # maps symbols onto an OFDM resource grid
 
+# Channel components        
+awgn_channel = sn.channel.AWGN()
+
+ls_est = sn.ofdm.LSChannelEstimator(resource_grid, interpolation_type="nn")
+
+# The demapper produces LLR for all coded bits
+demapper = sn.mapping.Demapper("app", "qam", num_bits_per_symbol)
+
+# The decoder provides hard-decisions on the information bits
+decoder = sn.fec.ldpc.LDPC5GDecoder(encoder, hard_out=True)
 
 output_frame = tf.zeros([num_slots_per_frame, resource_grid.num_ofdm_symbols, resource_grid.fft_size], dtype=tf.complex64)
+
+phi_ues = tf.random.uniform(shape=[num_slots_per_frame, num_ues], minval=0, maxval=2*np.pi)
+h_ues = tf.complex(tf.cos(phi_ues), tf.sin(phi_ues)) # Use tf.complex for complex numbers in TensorFlow
+
+# Store the original bits for comparison
+original_bits = []
+
 for i in range(num_ues):
     # Generate bits
     bits = binary_source([num_frames, k])
+    original_bits.append(bits)
     
     # Encode bits
     codewords = encoder(bits)
@@ -90,9 +104,9 @@ for i in range(num_ues):
     # Map codewords to symbols
     symbols = mapper(codewords)
     
-    # Map symbols to resource grid  (add two dimensions to the symbols tensor)
-    symbols_rg = resource_grid_mapper(tf.expand_dims(tf.expand_dims(symbols, axis=1),axis=1))
-    symbols_rg = tf.squeeze(tf.squeeze(symbols_rg, axis=1),axis=1)
+    # Map symbols to resource grid (add two dimensions to the symbols tensor)
+    symbols_rg = resource_grid_mapper(tf.expand_dims(tf.expand_dims(symbols, axis=1), axis=1))
+    symbols_rg = tf.squeeze(tf.squeeze(symbols_rg, axis=1), axis=1)
     
     # Create a list of unique random indices to select different positions of the replicas
     replicas_indices = np.random.choice(num_slots_per_frame, num_replicas_per_frame, replace=False)
@@ -101,14 +115,55 @@ for i in range(num_ues):
     print(f"UE {i+1} replicas indices: {replicas_indices}")
     
     # Create an empty tensor for full frame
-    frame_ue = tf.zeros([num_slots_per_frame,resource_grid.num_ofdm_symbols, resource_grid.fft_size], dtype=tf.complex64)
+    frame_ue = tf.zeros([num_slots_per_frame, resource_grid.num_ofdm_symbols, resource_grid.fft_size], dtype=tf.complex64)
     
-    # Scatter the replicas to the empty tensor to form the full frame
+    # Scatter the replicas to the empty tensor to form the full frame while passing through the channel
     for replica_idx in replicas_indices:
+        # Get the channel for the current UE and replica index
+        h_ue = h_ues[replica_idx, i]
+        # pass the symbols through the channel
+        symbols_rg = symbols_rg * h_ue
         frame_ue = tf.tensor_scatter_nd_update(frame_ue, [[replica_idx]], symbols_rg)
     
     # add the replicas to the output tensor
     output_frame += frame_ue
+
+# Pass through AWGN channel
+no = sn.utils.ebnodb2no(10, num_bits_per_symbol=num_bits_per_symbol, coderate=coderate)
+y_combined = y = awgn_channel([output_frame, no])
+
+# Extract the pilot and data indices
+pilot_indices = resource_grid._pilot_ofdm_symbol_indices
+data_indices = np.setdiff1d(np.arange(resource_grid.num_ofdm_symbols), pilot_indices)
+
+# Decode the received signal slot by slot
+decoded_bits = []
+for slot in range(num_slots_per_frame):
+    # Get the received signal for the current slot
+    y_slot = y_combined[slot, :, :]
+    
+    # Estimate the channel for the current slot
+    h_hat, err_var = ls_est([tf.expand_dims(tf.expand_dims(tf.expand_dims(y_slot, axis=0), axis=1), axis=1), no])
+    h_hat = tf.squeeze(h_hat)
+    
+    # Perform the equalization
+    y_symbols_rg_equalized = y_slot / h_hat
+    
+    # extract the data symbols
+    y_symbols = tf.reshape(tf.gather(y_symbols_rg_equalized, data_indices, axis=0), -1)
+    
+    # Perform the demapping
+    llr = demapper([y_symbols, no])
+    
+    # Perform the decoding
+    bits_hat = decoder(tf.expand_dims(llr, axis=0))
+    decoded_bits.append(bits_hat)
+
+# Compare the decoded bits with the original bits for each slot
+for slot in range(num_slots_per_frame):
+    for i in range(num_ues):
+        are_equal = tf.reduce_all(tf.equal(decoded_bits[slot], original_bits[i]))
+        print(f"The decoded bits in slot {slot+1} belong to UE {i+1}: {are_equal.numpy()}")
 
 # Report
 print("Transmission Report:")
@@ -120,40 +175,14 @@ print(f"Resource grid dimensions: {resource_grid.num_ofdm_symbols} OFDM symbols 
 print(f"Output frame shape: {output_frame.shape}")
 
 
+
+
 # %%
-    # squeeze the output frame
+# squeeze the output frame
 print(f"Output frame shape after squeezing: {output_frame.shape}")
 
-slot=0
-rg_ue1=output_frame[slot, :, :]
-slot=1
-rg_ue2=output_frame[slot, :, :]
-pilot_indices = resource_grid._pilot_ofdm_symbol_indices
-
-ue1_pilots= tf.gather(rg_ue1, pilot_indices, axis=0)
-print(f"UE1 pilots shape: {ue1_pilots.shape}")
-ue2_pilots= tf.gather(rg_ue2, pilot_indices, axis=0)
-print(f"UE2 pilots shape: {ue2_pilots.shape}")
-original_pilots = tf.squeeze(resource_grid.pilot_pattern.pilots)
-print(f"Original pilots shape: {original_pilots.shape}")
-
-
-
-
-#%%
-ue1_pilots_fltened = tf.reshape(ue1_pilots, [-1])
-ue2_pilots_fltened = tf.reshape(ue2_pilots, [-1])
-
-are_ues_equal=tf.reduce_all(tf.equal(ue1_pilots_fltened,ue2_pilots_fltened))
-print("Are the tensors exactly equal? ", are_ues_equal.numpy())
-
-# compare the pilots of the two UEs with the original pilots
-are_ues_equal=tf.reduce_all(tf.equal(ue1_pilots_fltened,original_pilots))
-print("Are the tensors exactly equal? ", are_ues_equal.numpy())
-
-
-
-
+slot=6
+output_frame[slot, :, :]
 
 #%%
 resource_grid = sn.ofdm.ResourceGrid( num_ofdm_symbols=14,
@@ -220,5 +249,5 @@ plt.imshow(np.abs(dmrs_grid_1), aspect='auto')
 plt.colorbar()
 plt.title('DMRS Grid')
 plt.show()
-are_ues_equal=tf.reduce_all(tf.equal(dmrs_grid,dmrs_grid_1))
-print("Are the tensors exactly equal? ", are_ues_equal.numpy())
+are_equal=tf.reduce_all(tf.equal(dmrs_grid,dmrs_grid_1))
+print("Are the tensors exactly equal? ", are_equal.numpy())
