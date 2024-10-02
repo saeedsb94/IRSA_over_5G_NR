@@ -40,7 +40,7 @@ print('sionna version:', sn.__version__)
 # Carrier parameters
 numerology = 0 # Numerology index
 num_resource_blocks = 1 # Number of resource blocks
-num_slots_per_frame = 1 # Number of slots per frame
+num_slots_per_frame = 5 # Number of slots per frame
 
 # Transport block parameters
 num_bits_per_symbol = 4 # QPSK
@@ -48,8 +48,8 @@ coderate = 0.5 # Code rate
 
 # IRSA Parameters
 num_frames = 1 # Number of frames
-num_replicas_per_frame = 1 # Number of replicas per frame
-num_ues = 1 # Number of UEs
+num_replicas_per_frame = [3, 3, 1] # Number of replicas per frame for each UE
+num_ues = 3 # Number of UEs
 
 # Create an instance of needed objects
 
@@ -118,7 +118,14 @@ for i in range(num_ues):
     symbols_rg_store[i] = symbols_rg
     
     # Create a list of unique random indices to select different positions of the replicas
-    replicas_indices = np.random.choice(num_slots_per_frame, num_replicas_per_frame, replace=False)
+    replicas_indices = np.random.choice(num_slots_per_frame, num_replicas_per_frame[i], replace=False)
+    
+    if i == 0:
+        replicas_indices=[2,3,4]
+    elif i == 1:
+        replicas_indices=[0,2,4]
+    else:
+        replicas_indices=[3]
     
     # Save the positions of the replicas for the current UE
     replica_positions[i] = replicas_indices
@@ -210,10 +217,8 @@ while slots_to_decode:
                     y_replica_slot = y_combined[pos, :, :]
                     # We start by re-estimate the channel for the current slot using the known data
                     # h_hat_2 = tf.math.de_no_nan(y_replica_slot, symbols_rg_store[ue])
-                    h_hat_2 = tf.math.divide_no_nan(
-                        y_replica_slot * tf.math.conj(symbols_rg_store[ue]),
-                        tf.complex(tf.abs(symbols_rg_store[ue])**2, 0.0)
-                    )
+                    phi_hat = tf.math.angle(tf.math.reduce_sum(y_replica_slot * tf.math.conj(symbols_rg_store[ue])))
+                    h_hat_2 = tf.complex(tf.cos(phi_hat), tf.sin(phi_hat))
                     # use the estimated channel to remove the ue signal at the current slot
                     clean_slot = y_replica_slot - symbols_rg_store[ue] * h_hat_2
                     # update the received signal
@@ -243,3 +248,6 @@ print(f"Number of replicas per frame: {num_replicas_per_frame}")
 print(f"Number of slots per frame: {num_slots_per_frame}")
 print(f"Resource grid dimensions: {resource_grid.num_ofdm_symbols} OFDM symbols x {resource_grid.fft_size} subcarriers")
 print(f"Output frame shape: {output_frame.shape}")
+
+
+# %%
