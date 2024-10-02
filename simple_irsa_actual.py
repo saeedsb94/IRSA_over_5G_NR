@@ -25,7 +25,6 @@ def get_soliton_np(L, a):
     res = np.array(res)
     res = res / res.sum()
     return res
-
 # Some examples of distributions Lambda  
 l3_dist = [0,0,0.5,0.28,0,0,0,0,0.22] # this is \Lambda_3 from [Liva2011]
 truc_sol_dist = get_ideal_soliton(30)    
@@ -134,4 +133,7 @@ plt.grid()
 
 plt.show()
 
+#%%
+print ("lambda_dist=", lambda_dist)
 
+# %%

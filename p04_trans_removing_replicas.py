@@ -101,11 +101,11 @@ symbols_rg_store = {}
 
 for i in range(num_ues):
     # Generate bits
-    bits = binary_source([num_frames, k])
+    bits = binary_source([k])
     original_bits.append(bits)
     
     # Encode bits
-    codewords = encoder(bits)
+    codewords = encoder(tf.expand_dims(bits, axis=0))
     
     # Map codewords to symbols
     symbols = mapper(codewords)
