@@ -65,7 +65,7 @@ def generate_ue_resource_grid(simulation_params):
     # Create the needed objects for transmission
     
     # Create the resource grid object
-    resource_grid = sn.ofdm.ResourceGrid(
+    resource_grid_config = sn.ofdm.ResourceGrid(
         num_ofdm_symbols=num_ofdm_symbols,
         fft_size=12 * num_resource_blocks,
         subcarrier_spacing=1e3 * (15 * 2 ** numerology),
@@ -79,7 +79,7 @@ def generate_ue_resource_grid(simulation_params):
     binary_source = sn.utils.BinarySource()
     
     # Calculate the number of coded bits (n) and information bits (k) in a resource grid
-    n = int(resource_grid.num_data_symbols * num_bits_per_symbol)
+    n = int(resource_grid_config.num_data_symbols * num_bits_per_symbol)
     k = int(n * coderate)
     
     # LDPC Encoder: Encodes the information bits into coded bits
@@ -89,7 +89,7 @@ def generate_ue_resource_grid(simulation_params):
     mapper = sn.mapping.Mapper("qam", num_bits_per_symbol)
     
     # Resource Grid Mapper: Maps symbols onto an OFDM resource grid
-    resource_grid_mapper = sn.ofdm.ResourceGridMapper(resource_grid)
+    resource_grid_mapper = sn.ofdm.ResourceGridMapper(resource_grid_config)
     
     # Transmission
     # Generate random binary bits for the UE
@@ -227,6 +227,81 @@ def pass_through_awgn(irsa_frame, ebno_db, simulation_params):
     received_frame = awgn_channel([irsa_frame, no])
 
     return received_frame, no
+def decode_slot(received_rg, no, simulation_params):
+    """
+    Decode a single slot and output the estimated bits and channel coefficients.
+
+    Args:
+        received_rg: The received resource grid for the slot.
+        no: The noise variance.
+        simulation_params: Dictionary containing all simulation parameters.
+
+    Returns:
+        bits_hat: The estimated bits.
+        h_hat: The estimated channel coefficients.
+    """
+    # Extract necessary parameters from the simulation_params dictionary
+    carrier_params = simulation_params["Carrier parameters"]
+    numerology = carrier_params['numerology']
+    num_resource_blocks = carrier_params['num_resource_blocks']
+    num_ofdm_symbols = carrier_params['num_ofdm_symbols']
+    pilot_indices = carrier_params['pilot_indices']
+    data_indices = np.setdiff1d(np.arange(num_ofdm_symbols), pilot_indices)
+
+    transport_block_params = simulation_params["Transport block parameters"]
+    num_bits_per_symbol = transport_block_params['num_bits_per_symbol']
+    coderate = transport_block_params['coderate']
+
+    # Create instances of needed objects
+    resource_grid_config = sn.ofdm.ResourceGrid(
+        num_ofdm_symbols=num_ofdm_symbols,
+        fft_size=12 * num_resource_blocks,
+        subcarrier_spacing=1e3 * (15 * 2 ** numerology),
+        pilot_pattern="kronecker",
+        pilot_ofdm_symbol_indices=pilot_indices
+    )
+    demapper = sn.mapping.Demapper("app", "qam", num_bits_per_symbol)
+    
+    # Calculate the number of coded bits (n) and information bits (k) in a resource grid
+    n = int(resource_grid_config.num_data_symbols * num_bits_per_symbol)
+    k = int(n * coderate)
+    
+    # LDPC Encoder: Encodes the information bits into coded bits
+    encoder = sn.fec.ldpc.LDPC5GEncoder(k, n)
+    
+    # LDPC Decoder: Decodes the coded bits back into information bits
+    decoder = sn.fec.ldpc.LDPC5GDecoder(encoder, hard_out=True)
+
+    ls_est = sn.ofdm.LSChannelEstimator(resource_grid_config, interpolation_type="nn")
+    h_hat, err_var = ls_est([tf.expand_dims(tf.expand_dims(tf.expand_dims(received_rg, axis=0), axis=1), axis=1), no])
+    h_hat = tf.squeeze(h_hat)
+    received_rg_equalized = received_rg / h_hat
+    received_symbols = tf.reshape(tf.gather(received_rg_equalized, data_indices, axis=0), -1)
+    llr = demapper([received_symbols, no])
+    bits_hat = decoder(tf.expand_dims(llr, axis=0))
+    return bits_hat, h_hat
+
+def remove_replicas(received_frame, resource_grid_list, replicas_indices_list, ue):
+    """
+    Remove the replicas of a UE when it is recognized.
+
+    Args:
+        received_frame: The received IRSA frame.
+        resource_grid_list: List of resource grids for each UE.
+        replicas_indices_list: List of replica indices for each UE.
+        ue: The index of the recognized UE.
+
+    Returns:
+        received_frame: The updated received frame with replicas removed.
+    """
+    for pos in replicas_indices_list[ue]:
+        y_replica_slot = received_frame[pos, :, :]
+        phi_hat = tf.math.angle(tf.math.reduce_sum(y_replica_slot * tf.math.conj(resource_grid_list[ue])))
+        h_hat_2 = tf.complex(tf.cos(phi_hat), tf.sin(phi_hat))
+        clean_slot = y_replica_slot - resource_grid_list[ue] * h_hat_2
+        received_frame = tf.tensor_scatter_nd_update(received_frame, [[pos]], clean_slot)
+        print(f"Removing replica of UE {ue+1} from slot {pos}.")
+    return received_frame
 
 def decode_irsa_frame(received_frame, no, simulation_params, resource_grid_list, original_bits_list, replicas_indices_list):
     """
@@ -245,41 +320,9 @@ def decode_irsa_frame(received_frame, no, simulation_params, resource_grid_list,
         slots_to_decode: List of slots to decode in future passes.
     """
     # Extract necessary parameters from the simulation_params dictionary
-    carrier_params = simulation_params["Carrier parameters"]
-    numerology = carrier_params['numerology']
-    num_resource_blocks = carrier_params['num_resource_blocks']
-    num_ofdm_symbols = carrier_params['num_ofdm_symbols']
-    pilot_indices = carrier_params['pilot_indices']
-    data_indices = np.setdiff1d(np.arange(num_ofdm_symbols), pilot_indices)
-
-    transport_block_params = simulation_params["Transport block parameters"]
-    num_bits_per_symbol = transport_block_params['num_bits_per_symbol']
-    coderate = transport_block_params['coderate']
-
     irsa_params = simulation_params["IRSA Parameters"]
     num_slots_per_frame = irsa_params['num_slots_per_frame']
     num_ues = irsa_params['num_ues']
-
-    # Create instances of needed objects
-    resource_grid = sn.ofdm.ResourceGrid(
-        num_ofdm_symbols=num_ofdm_symbols,
-        fft_size=12 * num_resource_blocks,
-        subcarrier_spacing=1e3 * (15 * 2 ** numerology),
-        pilot_pattern="kronecker",
-        pilot_ofdm_symbol_indices=pilot_indices
-    )
-    ls_est = sn.ofdm.LSChannelEstimator(resource_grid, interpolation_type="nn")
-    demapper = sn.mapping.Demapper("app", "qam", num_bits_per_symbol)
-    
-    # Calculate the number of coded bits (n) and information bits (k) in a resource grid
-    n = int(resource_grid.num_data_symbols * num_bits_per_symbol)
-    k = int(n * coderate)
-    
-    # LDPC Encoder: Encodes the information bits into coded bits
-    encoder = sn.fec.ldpc.LDPC5GEncoder(k, n)
-    
-    # LDPC Decoder: Decodes the coded bits back into information bits
-    decoder = sn.fec.ldpc.LDPC5GDecoder(encoder, hard_out=True)
 
     # Start decoding the received signal slot by slot
     decoded_bits = []
@@ -290,51 +333,36 @@ def decode_irsa_frame(received_frame, no, simulation_params, resource_grid_list,
     pass_num = 1
     while slots_to_decode:
         print(f"\nPass {pass_num}:")
-        new_identified_replicas = []
+        new_identified_ues = []
         slots_to_ignore = []
         for slot_index in slots_to_decode:
+            print(f"Processing slot {slot_index}:")
+            
             received_rg = received_frame[slot_index, :, :]
-            h_hat, err_var = ls_est([tf.expand_dims(tf.expand_dims(tf.expand_dims(received_rg, axis=0), axis=1), axis=1), no])
-            h_hat = tf.squeeze(h_hat)
-            received_rg_equalized = received_rg / h_hat
-            received_symbols = tf.reshape(tf.gather(received_rg_equalized, data_indices, axis=0), -1)
-            llr = demapper([received_symbols, no])
-            bits_hat = decoder(tf.expand_dims(llr, axis=0))
+            bits_hat, h_hat = decode_slot(received_rg, no, simulation_params)
             decoded_bits.append(bits_hat)
 
-            print(f"Processing slot {slot_index}:")
+            
             for i in undecoded_ues:
                 is_match = tf.reduce_all(tf.equal(bits_hat, original_bits_list[i]))
                 print(f"    UE {i+1} : {is_match.numpy()}")
 
                 if is_match.numpy():
-                    new_identified_replicas.append(i)
+                    new_identified_ues.append(i)
                     identified_replicas[i].append(replicas_indices_list[i])
+                    print(f"Ignoring slot {slot_index} as it has been successfully decoded.")
                     slots_to_ignore.append(slot_index)
+                    slots_to_decode.remove(slot_index)
                     undecoded_ues.remove(i)
                     break
-
-        for slot_index in slots_to_ignore:
-            print(f"Ignoring slot {slot_index} as it has been successfully decoded.")
-            slots_to_decode.remove(slot_index)
-
-        if new_identified_replicas:
-            for ue in new_identified_replicas:
-                for pos in replicas_indices_list[ue]:
-                    if pos not in slots_to_ignore:
-                        y_replica_slot = received_frame[pos, :, :]
-                        phi_hat = tf.math.angle(tf.math.reduce_sum(y_replica_slot * tf.math.conj(resource_grid_list[ue])))
-                        h_hat_2 = tf.complex(tf.cos(phi_hat), tf.sin(phi_hat))
-                        clean_slot = y_replica_slot - resource_grid_list[ue] * h_hat_2
-                        received_frame = tf.tensor_scatter_nd_update(received_frame, [[pos]], clean_slot)
-                        print(f"Removing replica of UE {ue+1} from slot {pos}.")
-
-        if not new_identified_replicas:
-            print("No new slots were decoded.")
+        if new_identified_ues:
+            for ue in new_identified_ues:
+                received_frame = remove_replicas(received_frame, resource_grid_list, replicas_indices_list, ue)
+        else:
+            print("No new UEs were identified.")
             break
         
-        
-        print(f"Slots to decode in future passes: {slots_to_decode}")
+        print(f"Remaining slots to decode in the next pass: {slots_to_decode}")
 
         pass_num += 1
     

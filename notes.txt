@@ -1,1 +1,1 @@
-I want to create a function that takes as an input resource grid config and return  the ue resource grid to be transmited and the indices to the replicas
+When suming resource grids to create the intfered one, Apply th
