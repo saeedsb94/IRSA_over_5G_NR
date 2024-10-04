@@ -9,8 +9,6 @@ import tensorflow as tf
 # For the implementation of the Keras models
 from tensorflow.keras import Model
 
-
-
 # also try %matplotlib widget
 import matplotlib.pyplot as plt
 
@@ -21,18 +19,17 @@ import time
 from sionna.mapping import Constellation, Mapper, Demapper
 from sionna.utils import BinarySource, ebnodb2no
 from sionna.channel import AWGN
-from sionna.utils.metrics import compute_ber
+from sionna.utils.metrics import compute_ber, compute_bler
 from sionna.signal import Upsampling, Downsampling, RootRaisedCosineFilter, empirical_psd, empirical_aclr
+import os
 
 # Allow memory growth for GPU
 gpus = tf.config.experimental.list_physical_devices('GPU')
 for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
     
-    
 print("The required libraries are imported successfully!")
 print('sionna version:', sn.__version__)
-
 
 #%%
 def generate_ue_resource_grid(simulation_params, batch_size):
@@ -40,14 +37,13 @@ def generate_ue_resource_grid(simulation_params, batch_size):
     Create the UE resource grids to be transmitted and the indices of the replicas for one UE.
 
     Args:
-        simulation_params: Dictionary containing all simulation parameters.
-        batch_size: The batch size for the simulation.
+        simulation_params (dict): Dictionary containing all simulation parameters.
+        batch_size (int): The batch size for the simulation.
 
     Returns:
-        symbols_rg: The UE resource grids to be transmitted.
-        bits: The transmitted bits.
+        tf.Tensor: The UE resource grids to be transmitted.
+        tf.Tensor: The transmitted bits.
     """
-    # Params extraction
     # Extract necessary parameters from the simulation_params dictionary
     carrier_params = simulation_params["Carrier parameters"]
     num_resource_blocks = carrier_params['num_resource_blocks']
@@ -59,9 +55,6 @@ def generate_ue_resource_grid(simulation_params, batch_size):
     num_bits_per_symbol = transport_block_params['num_bits_per_symbol']
     coderate = transport_block_params['coderate']
 
-    # Object creations
-    # Create the needed objects for transmission
-    
     # Create the resource grid object
     resource_grid_config = sn.ofdm.ResourceGrid(
         num_ofdm_symbols=num_ofdm_symbols,
@@ -89,7 +82,6 @@ def generate_ue_resource_grid(simulation_params, batch_size):
     # Resource Grid Mapper: Maps symbols onto an OFDM resource grid
     resource_grid_mapper = sn.ofdm.ResourceGridMapper(resource_grid_config)
     
-    # Transmission
     # Generate random binary bits for the UE
     bits = binary_source([batch_size, k])
     
@@ -112,15 +104,15 @@ def generate_resource_grid(simulation_params, batch_size, num_ues):
     Generate resource grids for multiple UEs with interference and optional phase shift.
 
     Args:
-        simulation_params: Dictionary containing all simulation parameters.
-        batch_size: The batch size for the simulation.
-        num_ues: The number of UEs in the simulation.
+        simulation_params (dict): Dictionary containing all simulation parameters.
+        batch_size (int): The batch size for the simulation.
+        num_ues (int): The number of UEs in the simulation.
 
     Returns:
-        interfered_resource_grids: The interfered resource grids.
-        bits_list: List of transmitted bits for each UE.
-        resource_grids_list: List of original resource grids for each UE.
-        channels: List of dictionaries containing channel angles and coefficients for each UE.
+        tf.Tensor: The interfered resource grids.
+        list: List of transmitted bits for each UE.
+        list: List of original resource grids for each UE.
+        list: List of dictionaries containing channel angles and coefficients for each UE.
     """
     # Extract necessary parameters from the simulation_params dictionary
     channel_params = simulation_params["Channel parameters"]
@@ -144,19 +136,20 @@ def generate_resource_grid(simulation_params, batch_size, num_ues):
             angles = tf.expand_dims(tf.expand_dims(angles, axis=1), axis=1) 
             # Step 2: Calculate the channel coefficients
             channel_coeff = tf.complex(tf.cos(angles), tf.sin(angles))
-            resource_grid = resource_grid * channel_coeff
+            
             
         else:
             angles = tf.zeros_like(resource_grid)
             channel_coeff = tf.ones_like(resource_grid)
         
         channels.append({'angle': angles, 'coeff': channel_coeff})
+        
 
         # Append the resource grid and bits to the lists
         resource_grid_list.append(resource_grid)
         bits_list.append(bits)
         
-        # Apply the channel coeffient
+        # Apply the channel coefficient
         faded_resource_grid_list.append(resource_grid * channel_coeff)
         
 
@@ -171,13 +164,13 @@ def pass_through_awgn(resource_grids, ebno_db, simulation_params):
     Pass the interfered resource grids through an AWGN channel.
 
     Args:
-        interfered_resource_grids: The interfered resource grids to be transmitted.
-        ebno_db: The Eb/No value in dB.
-        simulation_params: Dictionary containing all simulation parameters.
+        resource_grids (tf.Tensor): The interfered resource grids to be transmitted.
+        ebno_db (float): The Eb/No value in dB.
+        simulation_params (dict): Dictionary containing all simulation parameters.
 
     Returns:
-        y_resource_grids: The received signal after passing through the AWGN channel.
-        no: The noise variance.
+        tf.Tensor: The received signal after passing through the AWGN channel.
+        float: The noise variance.
     """
     # Extract necessary parameters from the simulation_params dictionary
     transport_block_params = simulation_params["Transport block parameters"]
@@ -201,13 +194,14 @@ def remove_interference(y_resource_grids, resource_grid_list, channels, is_perfe
     Remove interference from the received resource grids using estimated or perfect channel coefficients.
 
     Args:
-        y_resource_grids: The received resource grids with interference.
-        resource_grid_list: List of original resource grids for each UE.
-        channels: List of dictionaries containing channel angles and coefficients for each UE.
-        is_perfect_CSI: Boolean indicating whether to use perfect CSI (True) or estimated CSI (False).
+        y_resource_grids (tf.Tensor): The received resource grids with interference.
+        resource_grid_list (list): List of original resource grids for each UE.
+        channels (list): List of dictionaries containing channel angles and coefficients for each UE.
+        is_perfect_CSI (bool): Boolean indicating whether to use perfect CSI (True) or estimated CSI (False).
 
     Returns:
-        y_resource_grids_cleaned: The received resource grids with interference removed.
+        tf.Tensor: The received resource grids with interference removed.
+        tf.Tensor: The energy of the interference noise after removal.
     """
     # Initialize the cleaned resource grids with the received resource grids
     y_resource_grids_cleaned = y_resource_grids
@@ -230,22 +224,33 @@ def remove_interference(y_resource_grids, resource_grid_list, channels, is_perfe
 
         # Remove the interference caused by the current UE
         y_resource_grids_cleaned -= resource_grid * h_hat
+    
+    # Extract the resource grid for the first UE
+    resource_grid_ue1 = resource_grid_list[0]
+    # Get the perfect channel of the first UE
+    h_ue1 = channels[0]['coeff']
+    
+    y_ue1 = resource_grid_ue1 * h_ue1
+    
+    # Calculate the size of the resource grid (excluding the batch dimension)
+    resource_grid_size = resource_grid_ue1.shape[1]*resource_grid_ue1.shape[2]
+    
+    interference_noise_energy = tf.reduce_sum(tf.abs(y_resource_grids_cleaned - y_ue1) ** 2, axis=[1, 2])/resource_grid_size
 
-    return y_resource_grids_cleaned
-
+    return y_resource_grids_cleaned, interference_noise_energy
 
 def decode_slot(received_rg, no, simulation_params, batch_size):
     """
     Decode a single slot and output the estimated bits and channel coefficients.
 
     Args:
-        received_rg: The received resource grid for the slot.
-        no: The noise variance.
-        simulation_params: Dictionary containing all simulation parameters.
+        received_rg (tf.Tensor): The received resource grid for the slot.
+        no (float): The noise variance.
+        simulation_params (dict): Dictionary containing all simulation parameters.
 
     Returns:
-        bits_hat: The estimated bits.
-        h_hat: The estimated channel coefficients.
+        tf.Tensor: The estimated bits.
+        tf.Tensor: The estimated channel coefficients.
     """
     # Extract necessary parameters from the simulation_params dictionary
     carrier_params = simulation_params["Carrier parameters"]
@@ -303,18 +308,19 @@ def decode_slot(received_rg, no, simulation_params, batch_size):
     
     return bits_hat, h_hat
 
+# @tf.function() # Enable graph execution to speed things up
 def run_simulation(simulation_params, ebno_db, batch_size, num_ues):
     """
     Run the simulation with the given parameters and Eb/No value.
 
     Args:
-        simulation_params: Dictionary containing all simulation parameters.
-        ebno_db: The Eb/No value in dB.
-        batch_size: The batch size for the simulation.
-        num_ues: The number of UEs in the simulation.
+        simulation_params (dict): Dictionary containing all simulation parameters.
+        ebno_db (float): The Eb/No value in dB.
+        batch_size (int): The batch size for the simulation.
+        num_ues (int): The number of UEs in the simulation.
 
     Returns:
-        ber: Bit Error Rate for the first UE.
+        dict: Dictionary containing BER, BLER, and average residual interference energy.
     """
     # Extract the is_perfect_CSI parameter
     is_perfect_CSI = simulation_params["SIC"]["is_perfect_CSI"]
@@ -326,28 +332,37 @@ def run_simulation(simulation_params, ebno_db, batch_size, num_ues):
     received_rg, no = pass_through_awgn(resource_grids, ebno_db, simulation_params)
     
     # Remove interference from the received resource grids
-    cleaned_rg = remove_interference(received_rg, resource_grid_list, channels, is_perfect_CSI)
+    cleaned_rg, residual_interference = remove_interference(received_rg, resource_grid_list, channels, is_perfect_CSI)
     
     # Decode the cleaned resource grid for the first UE
     bits_hat, _ = decode_slot(cleaned_rg, no, simulation_params, batch_size)
     
+    # Compute the average residual interference energy
+    avg_residual_interference = tf.reduce_mean(residual_interference)
+    
     # Compute the Bit Error Rate (BER) for the first UE
     ber = compute_ber(bits_list[0], bits_hat)
     
-    return ber
+    # Compute the Block Error Rate (BLER) for the first UE
+    bler = compute_bler(bits_list[0], bits_hat)
+    
+    return {
+        "ber": ber,
+        "bler": bler,
+        "avg_residual_interference": avg_residual_interference
+    }
 
 #%%
-
 # Example usage
 simulation_params = {
     "Carrier parameters": {
-        "num_resource_blocks": 6,
+        "num_resource_blocks": 10,
         "numerology": 0,
-        "pilot_indices": [0, 1, 2],
+        "pilot_indices": [2,8],
         "num_ofdm_symbols": 14
     },
     "Transport block parameters": {
-        "num_bits_per_symbol": 2,
+        "num_bits_per_symbol": 4,
         "coderate": 0.5
     },
     "SIC": {
@@ -358,45 +373,98 @@ simulation_params = {
     }
 }
 
-ebno_db = 100
-batch_size = 1000
+#%%
+# Run the simulation for a specific Eb/No value, batch size, and number of UEs
+ebno_db = 10
+batch_size = 100
 num_ues = 10
-ber = run_simulation(simulation_params, ebno_db, batch_size, num_ues)
+results = run_simulation(simulation_params, ebno_db, batch_size, num_ues)
 
-# Print the BER
+# Print the BER, BLER, and average residual interference energy
 print("\n\n")
 print("=====================================================")
 print("Simulation Report:")
 print(f"Eb/No (dB): {ebno_db}")
-print(f"Bit Error Rate (BER) for the first UE: {ber}")
+print(f"Bit Error Rate (BER) for the first UE: {results['ber']}")
+print(f"Block Error Rate (BLER) for the first UE: {results['bler']}")
+print(f"Average Residual Interference Energy: {results['avg_residual_interference']}")
 print("=====================================================")
 
 # %%
-# Define a range of Eb/No values in dB
-# ebno_db_values = np.arange(-5, 21, 2)
-ebno_db_values = np.arange(100, 100, 1)
-# Define different numbers of UEs to simulate
-num_ues_values = [1, 2, 4, 6]
+# Plot the BER, BLER, and residual interference energy vs number of UEs for high Eb/No
+high_ebno = 100  # Define a high Eb/No value
+batch_size = 10000
+num_ues_values = np.arange(1, 15, dtype=int)
 
-# Initialize a dictionary to store the BER values for each number of UEs
-ber_values_dict = {}
+ber_values_high_ebno = []
+bler_values_high_ebno = []
+residual_interference_values_high_ebno = []
+success_rate_values_high_ebno = []
 
-# Run the simulation for each number of UEs and each Eb/No value
+# Run the simulation for each number of UEs at the high Eb/No value
 for num_ues in num_ues_values:
-    ber_values = []
-    for ebno_db in ebno_db_values:
-        ber = run_simulation(simulation_params, ebno_db, batch_size, num_ues)
-        ber_values.append(ber)
-        print(f"Num UEs: {num_ues}, Eb/No: {ebno_db} dB, BER: {ber}")
-    ber_values_dict[num_ues] = ber_values
+    results = run_simulation(simulation_params, high_ebno, batch_size, num_ues)
+    ber_values_high_ebno.append(results['ber'])
+    bler_values_high_ebno.append(results['bler'])
+    residual_interference_values_high_ebno.append(results['avg_residual_interference'])
+    success_rate = 1 - results['bler']  # Calculate success rate as 1 - BLER
+    success_rate_values_high_ebno.append(success_rate)
+    print(f"Num UEs: {num_ues}, Eb/No: {high_ebno} dB, BER: {results['ber']}, BLER: {results['bler']}, Residual Interference: {results['avg_residual_interference']}, Success Rate: {success_rate}")
 
-# Plot the BER vs Eb/No for different numbers of UEs
+# Plot the BER vs number of UEs
 plt.figure()
-for num_ues, ber_values in ber_values_dict.items():
-    plt.semilogy(ebno_db_values, ber_values, marker='o', label=f'{num_ues} UEs')
-plt.xlabel('Eb/No (dB)')
+plt.plot(num_ues_values, ber_values_high_ebno, marker='o')
+plt.xlabel('Number of UEs')
 plt.ylabel('Bit Error Rate (BER)')
-plt.title('BER vs Eb/No for Different Numbers of UEs')
-plt.grid(True, which='both', linestyle='--')
-plt.legend()
+plt.title(f'BER vs Number of UEs at Eb/No = {high_ebno} dB')
+plt.xticks(num_ues_values)  # Ensure integer ticks for number of UEs
+plt.grid(True)
+# Create a directory to save the figures if it doesn't exist
+output_dir = 'simulation_results'
+os.makedirs(output_dir, exist_ok=True)
+
+# Plot the BER vs number of UEs
+plt.figure()
+plt.plot(num_ues_values, ber_values_high_ebno, marker='o')
+plt.xlabel('Number of UEs')
+plt.ylabel('Bit Error Rate (BER)')
+plt.title(f'BER vs Number of UEs at Eb/No = {high_ebno} dB')
+plt.xticks(num_ues_values)  # Ensure integer ticks for number of UEs
+plt.grid(True)
+plt.savefig(os.path.join(output_dir, 'ber_vs_num_ues_high_ebno.png'))
 plt.show()
+
+# Plot the BLER vs number of UEs
+plt.figure()
+plt.plot(num_ues_values, bler_values_high_ebno, marker='o')
+plt.xlabel('Number of UEs')
+plt.ylabel('Block Error Rate (BLER)')
+plt.title(f'BLER vs Number of UEs at Eb/No = {high_ebno} dB')
+plt.xticks(num_ues_values)  # Ensure integer ticks for number of UEs
+plt.grid(True)
+plt.savefig(os.path.join(output_dir, 'bler_vs_num_ues_high_ebno.png'))
+plt.show()
+
+# Plot the residual interference energy vs number of UEs
+plt.figure()
+plt.plot(num_ues_values, residual_interference_values_high_ebno, marker='o')
+plt.xlabel('Number of UEs')
+plt.ylabel('Residual Interference Energy')
+plt.title(f'Residual Interference Energy vs Number of UEs at Eb/No = {high_ebno} dB')
+plt.xticks(num_ues_values)  # Ensure integer ticks for number of UEs
+plt.grid(True)
+plt.savefig(os.path.join(output_dir, 'residual_interference_vs_num_ues_high_ebno.png'))
+plt.show()
+
+# Plot the success rate vs number of UEs
+plt.figure()
+plt.plot(num_ues_values, success_rate_values_high_ebno, marker='o')
+plt.xlabel('Number of UEs')
+plt.ylabel('Success Rate')
+plt.title(f'Success Rate vs Number of UEs at Eb/No = {high_ebno} dB')
+plt.xticks(num_ues_values)  # Ensure integer ticks for number of UEs
+plt.grid(True)
+plt.savefig(os.path.join(output_dir, 'success_rate_vs_num_ues_high_ebno.png'))
+plt.show()
+
+# %%
