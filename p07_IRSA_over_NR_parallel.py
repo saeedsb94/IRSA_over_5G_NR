@@ -34,52 +34,7 @@ print("The required libraries are imported successfully!")
 print('sionna version:', sn.__version__)
 
 
-#%%
-def generate_slot_indices(simulation_num, num_ues_per_frame, frame_size, probabilities):
-    """
-    Generate slot indices for each UE based on the given probabilities.
 
-    Args:
-        simulation_num: Number of simulations to run.
-        num_ues_per_frame: Number of UEs per frame.
-        frame_size: Total number of slots in the frame.
-        probabilities: Probabilities for selecting 1, 2, 3, or 4 replicas.
-
-    Returns:
-        slot_indices_list: List of slot indices for each UE for each simulation.
-    """
-    # Normalize the probabilities if they don't sum to 1
-    probabilities = np.array(probabilities)
-    probabilities /= probabilities.sum()
-
-    slot_indices_list = []
-
-    for _ in range(simulation_num):
-        # Step 1: Select the number of replicas for each UE
-        # We assume replicas can range from 1 to len(probabilities) (since each probability represents one replica count)
-        replica_counts = np.random.choice(np.arange(len(probabilities)), size=num_ues_per_frame, p=probabilities)
-
-        # Step 2 and 3: For each UE, randomly select slot indices based on the selected number of replicas
-        simulation_slot_indices = []
-        for num_replicas in replica_counts:
-            slot_indices = np.random.choice(frame_size, size=num_replicas, replace=False)
-            simulation_slot_indices.append(slot_indices)
-
-        slot_indices_list.append(simulation_slot_indices)
-
-    return slot_indices_list
-
-# Example usage
-simulation_num = 5  # Number of simulations
-frame_size = 100  # Total number of slots in the frame
-num_ues = 20  # Number of UEs
-probabilities = [0, 0, 0.5, 0.5]  # Probabilities for selecting 1, 2, 3, or 4 replicas
-
-slot_indices_list = generate_slot_indices(simulation_num, num_ues, frame_size, probabilities)
-for sim_index, sim_slot_indices in enumerate(slot_indices_list):
-    print(f"Simulation {sim_index + 1}:")
-    for ue_index, slot_indices in enumerate(sim_slot_indices):
-        print(f"  UE {ue_index + 1} slot indices: {slot_indices}")
 #%%
 
 def generate_ues(simulation_params, num_ues_per_frame, num_simulations):
@@ -141,8 +96,8 @@ def generate_ues(simulation_params, num_ues_per_frame, num_simulations):
     
     
     # Generate random binary bits for the UE
-    batch_bits =num_ues_per_frame* num_simulations
-    bits = binary_source([batch_bits, n])
+    num_ues =num_ues_per_frame* num_simulations
+    bits = binary_source([num_ues, n])
     
     # Encode the bits using LDPC encoder
     codewords = encoder(bits)
@@ -158,7 +113,7 @@ def generate_ues(simulation_params, num_ues_per_frame, num_simulations):
     
     return resource_grid, bits
 
-def generate_slot_indices(simulation_num, num_ues_per_frame, frame_size, probabilities):
+def generate_slot_indices(num_simulations, num_ues_per_frame, frame_size, probabilities):
     """
     Generate slot indices for each UE based on the given probabilities.
 
@@ -166,64 +121,125 @@ def generate_slot_indices(simulation_num, num_ues_per_frame, frame_size, probabi
         simulation_num: Number of simulations to run.
         num_ues_per_frame: Number of UEs per frame.
         frame_size: Total number of slots in the frame.
-        probabilities: Probabilities for selecting 1, 2, 3, or 4 replicas.
+        probabilities: Probabilities for selecting number of replicas.
 
     Returns:
-        slot_indices_list: List of slot indices for each UE for each simulation.
+        slot_indices_tensor: Tensor of shape (batch_size, ) where batch_size = simulation_num * num_ues_per_frame.
+                             Each element is a list of the replicas.
     """
-    # Normalize the probabilities if they don't sum to 1
-    probabilities = np.array(probabilities)
-    probabilities /= probabilities.sum()
 
+    num_ues= num_simulations * num_ues_per_frame
+    
     slot_indices_list = []
 
-    for _ in range(simulation_num):
-        # Step 1: Select the number of replicas for each UE
-        # We assume replicas can range from 1 to len(probabilities) (since each probability represents one replica count)
-        replica_counts = np.random.choice(np.arange(len(probabilities)), size=num_ues_per_frame, p=probabilities)
+    # Step 1: Randomly select the number of replicas for each UE based on the given probabilities
+    replica_counts = np.random.choice(np.arange(len(probabilities)), size=num_ues, p=probabilities)
 
-        # Step 2 and 3: For each UE, randomly select slot indices based on the selected number of replicas
-        simulation_slot_indices = []
-        for num_replicas in replica_counts:
-            slot_indices = np.random.choice(frame_size, size=num_replicas, replace=False)
-            simulation_slot_indices.append(slot_indices)
+    # Step : For each UE, randomly select slot indices based on the selected number of replicas
+    for i in range(num_simulations):
+        for j in range(num_ues_per_frame):
+            num_replicas = replica_counts[i * num_ues_per_frame + j]
+            slot_indices = np.random.choice(np.arange(i * frame_size, (i + 1) * frame_size), size=num_replicas, replace=False)
+            slot_indices_list.append(slot_indices)
+    # Convert the list to a tensor
+    slot_indices_tensor = tf.ragged.constant(slot_indices_list)
 
-        slot_indices_list.append(simulation_slot_indices)
+    return slot_indices_tensor
 
-    return slot_indices_list
+#%%
+#test the function
+simulation_params = {
+    "Carrier parameters": {
+        "num_ofdm_symbols": 14,
+        "num_resource_blocks": 1,
+    },
+    "Channel parameters": {
+        "is_phase_shift_applied": True,
+    }
+}
+num_simulations = 10
+num_ues_per_frame = 2
+frame_size = 10
+probabilities = [0.1, 0.3, 0.4, 0.2]
 
-def generate_channel(simulation_params, num_ues_per_frame, num_simulations, is_phase_shift_applied):
+slot_indices = generate_slot_indices(num_simulations, num_ues_per_frame, frame_size, probabilities)
+
+# print the slot indices for each UE
+for i in range(num_simulations * num_ues_per_frame):
+    print(f"UE {i+1}: {slot_indices[i]}")
+
+#%%
+def generate_channel(simulation_params, num_ues_per_frame, num_simulations, frame_size, is_phase_shift_applied):
     """
-    Apply phase shift to the resource grid if required.
+    Generate the same channel coefficients for all resource elements in the resource grid for each UE.
 
     Args:
-        batch_size: The batch size for the simulation.
-        resource_grid: The resource grid to which the phase shift will be applied.
+        simulation_params: Dictionary containing all simulation parameters.
+        num_ues_per_frame: Number of UEs per frame.
+        num_simulations: Number of simulations to run.
         is_phase_shift_applied: Boolean indicating whether phase shift should be applied.
 
     Returns:
         angles: The angles used for phase shift.
-        channel_coeff: The channel coefficients after applying phase shift.
+        channel_coeff: The channel coefficients after applying phase shift (same for all REs).
     """
-    if is_phase_shift_applied:
-        # Step 1: Create the angle
-        angles = 2 * np.pi * tf.random.uniform(shape=[batch_size,], minval=0, maxval=1)
-        # Expand the angles to match the resource grid shape
-        angles = tf.expand_dims(tf.expand_dims(angles, axis=1), axis=1) 
-        # Step 2: Calculate the channel coefficients
-        channel_coeff = tf.complex(tf.cos(angles), tf.sin(angles))        
-    else:
-        angles = tf.zeros_like(resource_grid)
-        channel_coeff = tf.ones_like(resource_grid)
+    carrier_params = simulation_params["Carrier parameters"]
+    num_ofdm_symbols = carrier_params['num_ofdm_symbols']  # Number of OFDM symbols in a frame
+    num_resource_blocks = carrier_params['num_resource_blocks']  # Number of resource blocks
+    fft_size = 12 * num_resource_blocks  # Total number of subcarriers (assuming 12 subcarriers per resource block)
     
+    num_ues = num_ues_per_frame * num_simulations
+
+    # We only need one coefficient per UE per simulation
+    if is_phase_shift_applied:
+        # Step 1: Create a single set of angles for each UE and simulation (no OFDM symbols or subcarriers)
+        angles = 2 * np.pi * tf.random.uniform(shape=[num_ues, frame_size], minval=0, maxval=1, dtype=tf.float32)
+        
+        # Step 2: Calculate the single channel coefficient for each UE and simulation
+        channel_coeff_single = tf.complex(tf.cos(angles), tf.sin(angles))
+    else:
+        # If no phase shift is applied, return zeros for angles and ones for channel coefficients
+        angles = tf.zeros([num_ues, frame_size], dtype=tf.float32)
+        channel_coeff_single = tf.ones([num_ues, frame_size], dtype=tf.complex64)
+
+    # Step 3: Replicate the channel coefficient across all resource elements (OFDM symbols × subcarriers)
+    channel_coeff = tf.tile(tf.expand_dims(tf.expand_dims(channel_coeff_single, -1), -1), 
+                            multiples=[1, 1, num_ofdm_symbols, fft_size])
+
     return angles, channel_coeff
 
-def generate_hyper_irsa_frame(simulation_params, num_simulations, num_ues_per_frame, frame_size):
+#%%
+# Test the function
+simulation_params = {
+    "Carrier parameters": {
+        "num_ofdm_symbols": 14,
+        "num_resource_blocks": 1,
+    },
+    "Channel parameters": {
+        "is_phase_shift_applied": True,
+    }
+}
+
+angles, channel_coeff = generate_channel(simulation_params, num_ues_per_frame, num_simulations, frame_size, is_phase_shift_applied=True)
+
+print("Angles:")
+tf.print(angles)
+print("\nChannel coefficients:")
+tf.print(channel_coeff)
+print("\nShape of the channel coefficients:", channel_coeff.shape)
+
+
+#%%
+def generate_hyper_irsa_frame(simulation_params, num_simulations, num_ues_per_frame, frame_size, probabilities):
     """
     Generate an IRSA frame based on the given simulation parameters.
 
     Args:
         simulation_params: Dictionary containing all simulation parameters.
+        num_simulations: Number of simulations to run.
+        num_ues_per_frame: Number of UEs per frame.
+        frame_size: Total number of slots in the frame.
+        probabilities: Probabilities for selecting 1, 2, 3, or 4 replicas.
 
     Returns:
         irsa_frame: The generated IRSA frame.
@@ -242,49 +258,60 @@ def generate_hyper_irsa_frame(simulation_params, num_simulations, num_ues_per_fr
     is_phase_shift_applied = channel_params['is_phase_shift_applied']
     
     # Create the output frame tensor
-    batch_size = num_simulations*frame_size
+    batch_size = num_simulations * frame_size
+    irsa_hyper_frame = tf.zeros([batch_size, num_ofdm_symbols, fft_size], dtype=tf.complex64)
+    
+    # Lists to store the resource grids, replica indices, and original bits for each UE
+    resource_grids, bits = generate_ues(simulation_params, num_ues_per_frame, num_simulations)
+    
+    # Generate the channel coefficients for each UE
+    angles, channel_coeff = generate_channel(simulation_params, num_ues_per_frame, num_simulations, frame_size, is_phase_shift_applied)
+    
+    # Generate slot indices based on the given probabilities
+    slot_indices = generate_slot_indices(num_simulations, num_ues_per_frame, frame_size, probabilities)
+    
+    # Create an empty tensor to store the hyper IRSA frame
     irsa_hyper_frame = tf.zeros([batch_size, num_ofdm_symbols, fft_size], dtype=tf.complex64)
     
     
+# Process each simulation
+    for sim_index in range(num_simulations):
+        # Get the resource grids, bits, and slot indices for the current simulation
+        resource_grids_sim = resource_grids[sim_index * num_ues_per_frame : (sim_index + 1) * num_ues_per_frame]
+        slot_indices_sim = slot_indices[sim_index * num_ues_per_frame : (sim_index + 1) * num_ues_per_frame]
+        channel_coeff_sim = channel_coeff[sim_index * num_ues_per_frame : (sim_index + 1) * num_ues_per_frame]  
+        
+        # Create the hyper IRSA frame for the current simulation
+        for ue_index in range(num_ues_per_frame):
+            # Get the resource grid, bits, and channel coefficient for the current UE
+            resource_grid = resource_grids_sim[ue_index]
+            bits_ue = bits[sim_index * num_ues_per_frame + ue_index]
+            channel_coeff_ue = channel_coeff_sim[ue_index]
+            
+            # Add the resource grid to the hyper IRSA frame
+            irsa_hyper_frame[sim_index * frame_size + slot_indices_sim[ue_index]] = resource_grid
+            
+            # Add the channel coefficients to the list
+            h_ues.append(channel_coeff_ue)
+            
+            # Add the replica indices to the list
+            replicas_indices_list.append(slot_indices_sim[ue_index])
+            
+            # Add the original bits to the list
+            original_bits_list.append(bits_ue)
+        
+        
 
 
+        # Generate the hyper IRSA frame for the current simulation
+        irsa_frame, h_ues = generate_irsa_frame_single_simulation(
+            simulation_params, resource_grids_sim, bits_sim, channel_coeff, slot_indices_sim
+        )
 
-
-    # Lists to store the resource grids, replica indices, and original bits for each UE
-    resource_grids , bits = generate_ues(simulation_params, num_ues_per_frame, num_simulations)
-    
-    # Generate the channel coefficients for each UE
-    angles, channel_coeff = generate_channel(simulation_params, num_ues_per_frame, num_simulations, is_phase_shift_applied)
-    
-    replicas_indices_list = generate_replicas_indices(simulation_params, num_ues_per_frame, frame_size)
-
-    for i in range(num_ues_per_frame):
-        # Generate the resource grid and original bits for the current UE
-        resource_grid, bits = generate_ue_resource_grid(simulation_params)
-        resource_grid_list.append(resource_grid)
-        original_bits_list.append(bits)
-
-        # Generate the replica indices for the current UE
-        replicas_indices = generate_replicas_indices(simulation_params)
-        replicas_indices_list.append(replicas_indices)
-
-        # Print the indices of the replicas for the current UE
-        print(f"UE {i+1} replicas indices: {replicas_indices}")
-
-        # Create an empty tensor for the full frame of the current UE with the same shape as irsa_frame
-        ue_frame = tf.zeros_like(irsa_frame)
-
-        # Scatter the replicas to the empty tensor to form the full frame while passing through the channel
-        for replica_idx in replicas_indices:
-            h_ue = h_ues[replica_idx, i]
-            resource_grid_with_channel = resource_grid * h_ue
-            ue_frame = tf.tensor_scatter_nd_update(ue_frame, [[replica_idx]], resource_grid_with_channel)
-
-        # Add the replicas to the output tensor
-        irsa_frame += ue_frame
-
-    return irsa_frame, resource_grid_list, h_ues, replicas_indices_list, original_bits_list
-
+        # Update the hyper IRSA frame with the generated IRSA frame
+        irsa_hyper_frame[sim_index * frame_size : (sim_index + 1) * frame_size] = irsa_frame       
+        
+                
 def pass_through_awgn(irsa_frame, ebno_db, simulation_params):
     """
     Pass an IRSA frame through an AWGN channel.
