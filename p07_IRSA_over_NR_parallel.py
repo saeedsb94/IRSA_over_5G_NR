@@ -34,8 +34,52 @@ print("The required libraries are imported successfully!")
 print('sionna version:', sn.__version__)
 
 
+#%%
+def generate_slot_indices(simulation_num, num_ues_per_frame, frame_size, probabilities):
+    """
+    Generate slot indices for each UE based on the given probabilities.
 
+    Args:
+        simulation_num: Number of simulations to run.
+        num_ues_per_frame: Number of UEs per frame.
+        frame_size: Total number of slots in the frame.
+        probabilities: Probabilities for selecting 1, 2, 3, or 4 replicas.
 
+    Returns:
+        slot_indices_list: List of slot indices for each UE for each simulation.
+    """
+    # Normalize the probabilities if they don't sum to 1
+    probabilities = np.array(probabilities)
+    probabilities /= probabilities.sum()
+
+    slot_indices_list = []
+
+    for _ in range(simulation_num):
+        # Step 1: Select the number of replicas for each UE
+        # We assume replicas can range from 1 to len(probabilities) (since each probability represents one replica count)
+        replica_counts = np.random.choice(np.arange(len(probabilities)), size=num_ues_per_frame, p=probabilities)
+
+        # Step 2 and 3: For each UE, randomly select slot indices based on the selected number of replicas
+        simulation_slot_indices = []
+        for num_replicas in replica_counts:
+            slot_indices = np.random.choice(frame_size, size=num_replicas, replace=False)
+            simulation_slot_indices.append(slot_indices)
+
+        slot_indices_list.append(simulation_slot_indices)
+
+    return slot_indices_list
+
+# Example usage
+simulation_num = 5  # Number of simulations
+frame_size = 100  # Total number of slots in the frame
+num_ues = 20  # Number of UEs
+probabilities = [0, 0, 0.5, 0.5]  # Probabilities for selecting 1, 2, 3, or 4 replicas
+
+slot_indices_list = generate_slot_indices(simulation_num, num_ues, frame_size, probabilities)
+for sim_index, sim_slot_indices in enumerate(slot_indices_list):
+    print(f"Simulation {sim_index + 1}:")
+    for ue_index, slot_indices in enumerate(sim_slot_indices):
+        print(f"  UE {ue_index + 1} slot indices: {slot_indices}")
 #%%
 
 def generate_ues(simulation_params, num_ues_per_frame, num_simulations):
@@ -112,40 +156,41 @@ def generate_ues(simulation_params, num_ues_per_frame, num_simulations):
     # Remove the extra dimensions added during mapping
     resource_grid = tf.squeeze(tf.squeeze(resource_grid, axis=1), axis=1)
     
-    # Reshape the resource grid and bits to the desired tensor shape
-    resource_grid = tf.reshape(resource_grid, (num_simulations, num_ues_per_frame, num_ofdm_symbols, -1))
-    bits = tf.reshape(bits, (num_simulations, num_ues_per_frame, -1))
-    
     return resource_grid, bits
 
-
-def generate_replicas_indices(simulation_params, num_ues_per_frame, frame_size):
-    """Generate random number of replicas for each UE and their positions within the frame.
-    
-    Args:
-        simulation_params: Dictionary containing all simulation parameters.
-        num_ues_per_frame: Number of UEs in the frame.
-        frame_size: Size of the frame (number of slots).
-        
-    Returns:
-        list: A list of lists, each containing the slot indices selected by the corresponding UE.
+def generate_slot_indices(simulation_num, num_ues_per_frame, frame_size, probabilities):
     """
-    # Extract necessary parameters from the simulation_params dictionary
-    max_replicas = simulation_params["IRSA Parameters"]["max_replicas"]
-    
-    replicas_indices_list = []
-    
-    for _ in range(num_ues_per_frame):
-        # Generate a random number of replicas for the UE
-        num_replicas = np.random.randint(1, max_replicas + 1)
-        
-        # Generate slot indices for the UE
-        slot_indices = np.random.choice(frame_size, num_replicas, replace=False)
-        
-        replicas_indices_list.append(slot_indices)
-    
-    return replicas_indices_list
+    Generate slot indices for each UE based on the given probabilities.
 
+    Args:
+        simulation_num: Number of simulations to run.
+        num_ues_per_frame: Number of UEs per frame.
+        frame_size: Total number of slots in the frame.
+        probabilities: Probabilities for selecting 1, 2, 3, or 4 replicas.
+
+    Returns:
+        slot_indices_list: List of slot indices for each UE for each simulation.
+    """
+    # Normalize the probabilities if they don't sum to 1
+    probabilities = np.array(probabilities)
+    probabilities /= probabilities.sum()
+
+    slot_indices_list = []
+
+    for _ in range(simulation_num):
+        # Step 1: Select the number of replicas for each UE
+        # We assume replicas can range from 1 to len(probabilities) (since each probability represents one replica count)
+        replica_counts = np.random.choice(np.arange(len(probabilities)), size=num_ues_per_frame, p=probabilities)
+
+        # Step 2 and 3: For each UE, randomly select slot indices based on the selected number of replicas
+        simulation_slot_indices = []
+        for num_replicas in replica_counts:
+            slot_indices = np.random.choice(frame_size, size=num_replicas, replace=False)
+            simulation_slot_indices.append(slot_indices)
+
+        slot_indices_list.append(simulation_slot_indices)
+
+    return slot_indices_list
 
 def generate_channel(simulation_params, num_ues_per_frame, num_simulations, is_phase_shift_applied):
     """
