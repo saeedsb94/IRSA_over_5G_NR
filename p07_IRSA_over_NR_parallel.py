@@ -125,111 +125,79 @@ def generate_slot_indices(num_simulations, num_ues_per_frame, frame_size, probab
 
     Returns:
         slot_indices_tensor: Tensor of shape (batch_size, ) where batch_size = simulation_num * num_ues_per_frame.
-                             Each element is a list of the replicas.
+                                Each element is a list of the replicas.
+        replica_counts: List of the number of replicas for each UE.
     """
 
-    num_ues= num_simulations * num_ues_per_frame
+    num_ues = num_simulations * num_ues_per_frame
     
     slot_indices_list = []
 
     # Step 1: Randomly select the number of replicas for each UE based on the given probabilities
-    replica_counts = np.random.choice(np.arange(len(probabilities)), size=num_ues, p=probabilities)
+    replica_counts = np.random.choice(np.arange(1, len(probabilities) + 1), size=num_ues, p=probabilities)
 
-    # Step : For each UE, randomly select slot indices based on the selected number of replicas
+    # Step 2: For each UE, randomly select slot indices based on the selected number of replicas
     for i in range(num_simulations):
         for j in range(num_ues_per_frame):
             num_replicas = replica_counts[i * num_ues_per_frame + j]
             slot_indices = np.random.choice(np.arange(i * frame_size, (i + 1) * frame_size), size=num_replicas, replace=False)
             slot_indices_list.append(slot_indices)
+    
     # Convert the list to a tensor
     slot_indices_tensor = tf.ragged.constant(slot_indices_list)
 
-    return slot_indices_tensor
+    return slot_indices_tensor, replica_counts
 
-#%%
-#test the function
-simulation_params = {
-    "Carrier parameters": {
-        "num_ofdm_symbols": 14,
-        "num_resource_blocks": 1,
-    },
-    "Channel parameters": {
-        "is_phase_shift_applied": True,
-    }
-}
-num_simulations = 10
-num_ues_per_frame = 2
-frame_size = 10
-probabilities = [0.1, 0.3, 0.4, 0.2]
-
-slot_indices = generate_slot_indices(num_simulations, num_ues_per_frame, frame_size, probabilities)
-
-# print the slot indices for each UE
-for i in range(num_simulations * num_ues_per_frame):
-    print(f"UE {i+1}: {slot_indices[i]}")
-
-#%%
-def generate_channel(simulation_params, num_ues_per_frame, num_simulations, frame_size, is_phase_shift_applied):
+def generate_channel(simulation_params, num_simulations, num_ues_per_frame, num_replicas, is_phase_shift_applied):
     """
     Generate the same channel coefficients for all resource elements in the resource grid for each UE.
-
+    
     Args:
         simulation_params: Dictionary containing all simulation parameters.
         num_ues_per_frame: Number of UEs per frame.
         num_simulations: Number of simulations to run.
+        num_replicas: Array of number of replicas for each UE.
         is_phase_shift_applied: Boolean indicating whether phase shift should be applied.
-
+        
     Returns:
-        angles: The angles used for phase shift.
-        channel_coeff: The channel coefficients after applying phase shift (same for all REs).
+        angles: The angles used for phase shift as a tf.RaggedTensor.
+        channel_coeff: The channel coefficients as a tf.RaggedTensor, where each element is a 3D tensor.
     """
     carrier_params = simulation_params["Carrier parameters"]
     num_ofdm_symbols = carrier_params['num_ofdm_symbols']  # Number of OFDM symbols in a frame
     num_resource_blocks = carrier_params['num_resource_blocks']  # Number of resource blocks
     fft_size = 12 * num_resource_blocks  # Total number of subcarriers (assuming 12 subcarriers per resource block)
-    
+
     num_ues = num_ues_per_frame * num_simulations
-
-    # We only need one coefficient per UE per simulation
-    if is_phase_shift_applied:
-        # Step 1: Create a single set of angles for each UE and simulation (no OFDM symbols or subcarriers)
-        angles = 2 * np.pi * tf.random.uniform(shape=[num_ues, frame_size], minval=0, maxval=1, dtype=tf.float32)
+    
+    angles_list = []
+    channel_coeff_list = []
+    
+    for ue_idx in range(num_ues):
+        # Number of replicas for the current UE
+        ue_num_replicas = num_replicas[ue_idx]
         
-        # Step 2: Calculate the single channel coefficient for each UE and simulation
-        channel_coeff_single = tf.complex(tf.cos(angles), tf.sin(angles))
-    else:
-        # If no phase shift is applied, return zeros for angles and ones for channel coefficients
-        angles = tf.zeros([num_ues, frame_size], dtype=tf.float32)
-        channel_coeff_single = tf.ones([num_ues, frame_size], dtype=tf.complex64)
+        if is_phase_shift_applied:
+            # Step 1: Create a set of angles for the current UE
+            angles = 2 * np.pi * tf.random.uniform(shape=[ue_num_replicas], minval=0, maxval=1, dtype=tf.float32)
+            
+            # Step 2: Calculate the channel coefficient for the current UE
+            channel_coeff_single = tf.complex(tf.cos(angles), tf.sin(angles))
+        else:
+            # No phase shift, return zeros for angles and ones for channel coefficients
+            angles = tf.zeros([ue_num_replicas], dtype=tf.float32)
+            channel_coeff_single = tf.ones([ue_num_replicas], dtype=tf.complex64)
 
-    # Step 3: Replicate the channel coefficient across all resource elements (OFDM symbols × subcarriers)
-    channel_coeff = tf.tile(tf.expand_dims(tf.expand_dims(channel_coeff_single, -1), -1), 
-                            multiples=[1, 1, num_ofdm_symbols, fft_size])
+        # Step 3: Replicate the channel coefficient across all resource elements (OFDM symbols × subcarriers)
+        channel_coeff = tf.tile(tf.expand_dims(tf.expand_dims(channel_coeff_single, -1), -1), 
+                                multiples=[1, num_ofdm_symbols, fft_size])
 
-    return angles, channel_coeff
+        # Append the results to the lists
+        angles_list.append(angles)
+        channel_coeff_list.append(channel_coeff)
 
-#%%
-# Test the function
-simulation_params = {
-    "Carrier parameters": {
-        "num_ofdm_symbols": 14,
-        "num_resource_blocks": 1,
-    },
-    "Channel parameters": {
-        "is_phase_shift_applied": True,
-    }
-}
+    return angles_list, channel_coeff_list
 
-angles, channel_coeff = generate_channel(simulation_params, num_ues_per_frame, num_simulations, frame_size, is_phase_shift_applied=True)
-
-print("Angles:")
-tf.print(angles)
-print("\nChannel coefficients:")
-tf.print(channel_coeff)
-print("\nShape of the channel coefficients:", channel_coeff.shape)
-
-
-#%%
 def generate_hyper_irsa_frame(simulation_params, num_simulations, num_ues_per_frame, frame_size, probabilities):
     """
     Generate an IRSA frame based on the given simulation parameters.
@@ -264,53 +232,41 @@ def generate_hyper_irsa_frame(simulation_params, num_simulations, num_ues_per_fr
     # Lists to store the resource grids, replica indices, and original bits for each UE
     resource_grids, bits = generate_ues(simulation_params, num_ues_per_frame, num_simulations)
     
+    # Generate slot indices based on the given probabilities
+    slot_indices = generate_slot_indices(num_simulations, num_ues_per_frame, frame_size, probabilities)
+    
     # Generate the channel coefficients for each UE
     angles, channel_coeff = generate_channel(simulation_params, num_ues_per_frame, num_simulations, frame_size, is_phase_shift_applied)
     
-    # Generate slot indices based on the given probabilities
-    slot_indices = generate_slot_indices(num_simulations, num_ues_per_frame, frame_size, probabilities)
+
     
     # Create an empty tensor to store the hyper IRSA frame
     irsa_hyper_frame = tf.zeros([batch_size, num_ofdm_symbols, fft_size], dtype=tf.complex64)
     
     
-# Process each simulation
-    for sim_index in range(num_simulations):
-        # Get the resource grids, bits, and slot indices for the current simulation
-        resource_grids_sim = resource_grids[sim_index * num_ues_per_frame : (sim_index + 1) * num_ues_per_frame]
-        slot_indices_sim = slot_indices[sim_index * num_ues_per_frame : (sim_index + 1) * num_ues_per_frame]
-        channel_coeff_sim = channel_coeff[sim_index * num_ues_per_frame : (sim_index + 1) * num_ues_per_frame]  
+    num_ues=num_ues_per_frame*num_simulations
+    
+    # Process each UE
+    for ue_index in range(num_ues):
+        # Create a temporary hyper IRSA frame for the current UE
+        ue_hyper_irsa_frame = tf.zeros_like(irsa_hyper_frame)
         
-        # Create the hyper IRSA frame for the current simulation
-        for ue_index in range(num_ues_per_frame):
-            # Get the resource grid, bits, and channel coefficient for the current UE
-            resource_grid = resource_grids_sim[ue_index]
-            bits_ue = bits[sim_index * num_ues_per_frame + ue_index]
-            channel_coeff_ue = channel_coeff_sim[ue_index]
-            
-            # Add the resource grid to the hyper IRSA frame
-            irsa_hyper_frame[sim_index * frame_size + slot_indices_sim[ue_index]] = resource_grid
-            
-            # Add the channel coefficients to the list
-            h_ues.append(channel_coeff_ue)
-            
-            # Add the replica indices to the list
-            replicas_indices_list.append(slot_indices_sim[ue_index])
-            
-            # Add the original bits to the list
-            original_bits_list.append(bits_ue)
+        # Get the resource grid and channel coefficient for the current UE
+        resource_grid = resource_grids[ue_index]
+        channel_coeff_ue = channel_coeff[ue_index]
         
+        # Get the slot indices for the current UE
+        slot_indices_ue = slot_indices[ue_index]
         
-
-
-        # Generate the hyper IRSA frame for the current simulation
-        irsa_frame, h_ues = generate_irsa_frame_single_simulation(
-            simulation_params, resource_grids_sim, bits_sim, channel_coeff, slot_indices_sim
-        )
-
-        # Update the hyper IRSA frame with the generated IRSA frame
-        irsa_hyper_frame[sim_index * frame_size : (sim_index + 1) * frame_size] = irsa_frame       
+        # Allocate the replicas of the current UE in the temporary hyper IRSA frame
+        for replica_index in slot_indices_ue:
+            resource_grid_with_channel = resource_grid * channel_coeff_ue[replica_index]
+            ue_hyper_irsa_frame = tf.tensor_scatter_nd_update(ue_hyper_irsa_frame, [[replica_index]], resource_grid_with_channel)
         
+        # Add the temporary hyper IRSA frame to the output frame
+        irsa_hyper_frame += ue_hyper_irsa_frame
+        
+    return irsa_hyper_frame, resource_grids, channel_coeff, slot_indices, bits
                 
 def pass_through_awgn(irsa_frame, ebno_db, simulation_params):
     """
@@ -340,7 +296,8 @@ def pass_through_awgn(irsa_frame, ebno_db, simulation_params):
     received_frame = awgn_channel([irsa_frame, no])
 
     return received_frame, no
-def decode_slot(received_rg, no, simulation_params):
+
+def decode_frame(received_rg, no, num_simulations, frame_size, simulation_params):
     """
     Decode a single slot and output the estimated bits and channel coefficients.
 
@@ -365,6 +322,8 @@ def decode_slot(received_rg, no, simulation_params):
     num_bits_per_symbol = transport_block_params['num_bits_per_symbol']
     coderate = transport_block_params['coderate']
 
+    batch_size = num_simulations * frame_size
+    
     # Create instances of needed objects
     resource_grid_config = sn.ofdm.ResourceGrid(
         num_ofdm_symbols=num_ofdm_symbols,
@@ -386,15 +345,63 @@ def decode_slot(received_rg, no, simulation_params):
     decoder = sn.fec.ldpc.LDPC5GDecoder(encoder, hard_out=True)
 
     ls_est = sn.ofdm.LSChannelEstimator(resource_grid_config, interpolation_type="nn")
-    h_hat, err_var = ls_est([tf.expand_dims(tf.expand_dims(tf.expand_dims(received_rg, axis=0), axis=1), axis=1), no])
-    h_hat = tf.squeeze(h_hat)
-    received_rg_equalized = received_rg / h_hat
-    received_symbols = tf.reshape(tf.gather(received_rg_equalized, data_indices, axis=0), -1)
+    
+    
+    # Perform the decoding process
+      # Estimate the channel coefficients (h_hat) and error variance (err_var)
+    h_hat, err_var = ls_est([tf.expand_dims(tf.expand_dims(received_rg, axis=1), axis=1), no]) # Add two dimensions to match the input shape of the LSChannelEstimator
+    h_hat = tf.squeeze(h_hat, axis=[1,2,3,4])  # Remove the added dimensions
+    
+    # Equalize the received resource grid using the estimated channel coefficients
+    received_rg_equalized = tf.math.divide_no_nan(received_rg, h_hat)
+
+    # Extract the data symbols from the equalized resource grid
+    received_data_rg = tf.gather(received_rg_equalized, data_indices, axis=1)
+    # Flatten the received symbols to match the input shape of the demapper
+    received_symbols= tf.reshape(received_symbols, (batch_size, -1))
+
+    # Demap the received symbols to log-likelihood ratios (LLRs)
     llr = demapper([received_symbols, no])
-    bits_hat = decoder(tf.expand_dims(llr, axis=0))
+    
+    # Decode the LLRs to estimate the transmitted bits
+    bits_hat = decoder(llr)
+    
     return bits_hat, h_hat
 
-def remove_replicas(received_frame, resource_grid_list, replicas_indices_list, ue):
+def search_new_identified_ues(bits_hat, bits, slot_indices, identified_ues):
+    """
+    Search for the identified UEs inside bits_hat.
+
+    Args:
+        bits_hat: The estimated bits.
+        bits: List of original bits for each UE.
+        slot_indices: List of slot indices for each UE.
+        identified_ues: Set of indices of already identified UEs.
+
+    Returns:
+        new_identified_ues: Set of indices of newly identified UEs.
+        identified_positions: Set of positions where UEs were identified.
+        new_ues_found: Boolean flag indicating if new UEs were found.
+    """
+    num_ues = len(bits)
+    new_identified_ues = set()
+    new_identified_positions = set()
+    new_ues_found = False
+    
+    for i in range(num_ues):
+        if i not in identified_ues:
+            # Get the position of the bits in the bits_hat tensor
+            ue_slot_indices = slot_indices[i]
+            for slot_index in ue_slot_indices:
+                is_match = tf.reduce_all(tf.equal(bits_hat[slot_index], bits[i]))
+                if is_match:
+                    new_identified_ues.add(i)
+                    new_identified_positions.add(slot_index)
+                    new_ues_found = True
+                
+    return new_identified_ues, new_identified_positions, new_ues_found
+
+def remove_replicas_of_newlly_identified_ues(y_resource_grids, resourse_grids, slot_indices, new_identified_ues, is_perfect_CSI):
     """
     Remove the replicas of a UE when it is recognized.
 
@@ -402,85 +409,81 @@ def remove_replicas(received_frame, resource_grid_list, replicas_indices_list, u
         received_frame: The received IRSA frame.
         resource_grid_list: List of resource grids for each UE.
         replicas_indices_list: List of replica indices for each UE.
-        ue: The index of the recognized UE.
+        identified_ues: List of indices of recognized UEs.
 
     Returns:
         received_frame: The updated received frame with replicas removed.
     """
-    for pos in replicas_indices_list[ue]:
-        y_replica_slot = received_frame[pos, :, :]
-        phi_hat = tf.math.angle(tf.math.reduce_sum(y_replica_slot * tf.math.conj(resource_grid_list[ue])))
-        h_hat_2 = tf.complex(tf.cos(phi_hat), tf.sin(phi_hat))
-        clean_slot = y_replica_slot - resource_grid_list[ue] * h_hat_2
-        received_frame = tf.tensor_scatter_nd_update(received_frame, [[pos]], clean_slot)
-        print(f"Removing replica of UE {ue+1} from slot {pos}.")
-    return received_frame
+    y_resource_grids_cleaned = y_resource_grids
 
-def decode_irsa_frame(received_frame, no, simulation_params, resource_grid_list, original_bits_list, replicas_indices_list):
+    for ue in new_identified_ues:
+        # Extract the resource grid of the current ue
+        ue_rg=resourse_grids[ue]
+        for pos in slot_indices[ue]:
+            y_replica_slot = y_resource_grids_cleaned[pos]
+            
+            if is_perfect_CSI:
+                # Extract the Channel coefficient of the replica
+                h_hat_replicas = channels[i]['coeff']
+            else:
+                # Estimate the channel coefficient of the replica
+                phi_hat = tf.math.angle(tf.math.reduce_sum(y_replica_slot * tf.math.conj(ue_rg)))
+                h_hat_replicas = tf.complex(tf.cos(phi_hat), tf.sin(phi_hat))
+            
+            
+            clean_slot = y_replica_slot - ue_rg * h_hat_replicas
+            y_resource_grids_cleaned = tf.tensor_scatter_nd_update(y_resource_grids_cleaned, [[pos]], clean_slot)
+
+    return y_resource_grids_cleaned
+
+def decode_irsa_frame(y_resource_grids, no, simulation_params, resourse_grids, bits, slot_indices, num_simulations, frame_size, num_ues_per_frame): 
     """
     Decode an IRSA frame.
 
     Args:
-        received_frame: The received IRSA frame after passing through the channel.
+        y_resource_grids: The received IRSA frame after passing through the channel.
         no: The noise variance.
         simulation_params: Dictionary containing all simulation parameters.
-        resource_grid_list: List of resource grids for each UE.
-        original_bits_list: List of original bits for each UE.
-        replicas_indices_list: List of replica indices for each UE.
+        resourse_grids: List of resource grids for each UE.
+        bits: List of original bits for each UE.
+        slot_indices: List of slot indices for each UE.
+        num_simulations: Number of simulations to run.
+        frame_size: Total number of slots in the frame.
+        num_ues_per_frame: Number of UEs per frame.
+        probabilities: Probabilities for selecting number of replicas.
 
     Returns:
         identified_ues: List of identified UEs.
         slots_to_decode: List of slots to decode in future passes.
     """
     # Extract necessary parameters from the simulation_params dictionary
-    irsa_params = simulation_params["IRSA Parameters"]
-    num_slots_per_frame = irsa_params['num_slots_per_frame']
-    num_ues = irsa_params['num_ues']
+    num_ues = num_simulations * num_ues_per_frame
 
     # Start decoding the received signal slot by slot
-    decoded_bits = []
-    identified_replicas = {i: [] for i in range(num_ues)}
-    slots_to_decode = list(range(num_slots_per_frame))
-    undecoded_ues = list(range(num_ues))
-
+    identified_ues = set()
+    
     pass_num = 1
-    while slots_to_decode:
+    while len(identified_ues) < num_ues:
         print(f"\nPass {pass_num}:")
-        new_identified_ues = []
-        slots_to_ignore = []
-        for slot_index in slots_to_decode:
-            print(f"Processing slot {slot_index}:")
-            
-            received_rg = received_frame[slot_index, :, :]
-            bits_hat, h_hat = decode_slot(received_rg, no, simulation_params)
-            decoded_bits.append(bits_hat)
+        new_identified_ues = set()
+        new_identified_positions = set()
 
-            
-            for i in undecoded_ues:
-                is_match = tf.reduce_all(tf.equal(bits_hat, original_bits_list[i]))
-                print(f"    UE {i+1} : {is_match.numpy()}")
+        bits_hat, h_hat = decode_frame(y_resource_grids, no, num_simulations, frame_size, simulation_params)
+        new_ues, new_positions, new_ues_found = search_new_identified_ues(bits_hat, bits, slot_indices, identified_ues)
+        
+        new_identified_ues.update(new_ues)
+        new_identified_positions.update(new_positions)
 
-                if is_match.numpy():
-                    new_identified_ues.append(i)
-                    identified_replicas[i].append(replicas_indices_list[i])
-                    print(f"Ignoring slot {slot_index} as it has been successfully decoded.")
-                    slots_to_ignore.append(slot_index)
-                    slots_to_decode.remove(slot_index)
-                    undecoded_ues.remove(i)
-                    break
-        if new_identified_ues:
-            for ue in new_identified_ues:
-                received_frame = remove_replicas(received_frame, resource_grid_list, replicas_indices_list, ue)
+        if new_ues_found:
+            y_resource_grids = remove_replicas_of_newlly_identified_ues(y_resource_grids, resourse_grids, slot_indices, new_identified_ues, simulation_params["Channel parameters"]["type"] == "Only Phase Shift")
+            identified_ues.update(new_identified_ues)
         else:
             print("No new UEs were identified.")
             break
-        
-        print(f"Remaining slots to decode in the next pass: {slots_to_decode}")
 
         pass_num += 1
-    
-    identified_ues = [ue+1 for ue in range(num_ues) if ue not in undecoded_ues]    
-    return identified_ues, slots_to_decode
+
+    return list(identified_ues)
 
 
 
