@@ -6,6 +6,7 @@
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 #%%
 # Distributions for degree selection: the degree always starts from 0 
@@ -85,7 +86,7 @@ def decode_irsa(slots_of_users, M):
         nb_iter += 1
 
     return decoded_set #, decoded_iteration #, users_of_slots
-
+#%%
 np.random.seed(1)
 # 7 users transmitting in 10 slots with degree 2
 N = 7
@@ -113,27 +114,38 @@ print("avg decoded=%s" %avg_decoded, " for 10 trials with N=90 M=100 degree=2"  
 
 #%%
 
-L = 100 # number of simulations
-M = 100 # number of slots
-lambda_dist = np_sol_dist # [0,0,1]
+L = 1000 # number of simulations
+M = 15 # number of slots
+# lambda_dist = np_sol_dist # [0,0,1]
+lambda_dist=[0, 0.3, 0.15, 0.55]
 np.random.seed(1)
-
 
 xl = []
 yl = []
-for N in range(5,M+1,5): # number of users
+for N in range(1,M+1,1): # number of users
     avg_decoded = simul_nb_decoded(N, M, L, lambda_dist)
     xl.append(N)
     yl.append(avg_decoded)    
 xarray = np.array(xl)
 yarray = np.array(yl)
-plt.plot(xarray, yarray, ".-", label="%s" % lambda_dist)
-#plt.legend(loc="top left")
+
+# Create a new figure
+plt.figure()
+
+# Plot the first curve
+plt.plot(xarray, yarray, ".-", label="simulated %s" % lambda_dist)
+
+# Load the data from irsa_performance.csv
+data = pd.read_csv('irsa_performance.csv')
+
+# Extract the number of users and the average number of decoded users
+num_users = data['num_users'].values
+avg_decoded_imperfect_sic = data['avg_decoded_imperfect_sic'].values
+
+# Plot the new curve on the same figure
+plt.plot(num_users, avg_decoded_imperfect_sic, ".-", label="imperfect SIC")
+
+# Add legend, grid, and show the plot
+plt.legend(loc="best")
 plt.grid()
-
 plt.show()
-
-#%%
-print ("lambda_dist=", lambda_dist)
-
-# %%

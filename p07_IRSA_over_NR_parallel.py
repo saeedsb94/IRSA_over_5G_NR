@@ -97,7 +97,7 @@ def generate_ues(simulation_params, num_ues_per_frame, num_simulations):
     
     # Generate random binary bits for the UE
     num_ues =num_ues_per_frame* num_simulations
-    bits = binary_source([num_ues, n])
+    bits = binary_source([num_ues, k])
     
     # Encode the bits using LDPC encoder
     codewords = encoder(bits)
@@ -134,7 +134,7 @@ def generate_slot_indices(num_simulations, num_ues_per_frame, frame_size, probab
     slot_indices_list = []
 
     # Step 1: Randomly select the number of replicas for each UE based on the given probabilities
-    replica_counts = np.random.choice(np.arange(1, len(probabilities) + 1), size=num_ues, p=probabilities)
+    replica_counts = np.random.choice(np.arange(len(probabilities)), size=num_ues, p=probabilities)
 
     # Step 2: For each UE, randomly select slot indices based on the selected number of replicas
     for i in range(num_simulations):
@@ -143,10 +143,8 @@ def generate_slot_indices(num_simulations, num_ues_per_frame, frame_size, probab
             slot_indices = np.random.choice(np.arange(i * frame_size, (i + 1) * frame_size), size=num_replicas, replace=False)
             slot_indices_list.append(slot_indices)
     
-    # Convert the list to a tensor
-    slot_indices_tensor = tf.ragged.constant(slot_indices_list)
 
-    return slot_indices_tensor, replica_counts
+    return slot_indices_list, replica_counts
 
 def generate_channel(simulation_params, num_simulations, num_ues_per_frame, num_replicas, is_phase_shift_applied):
     """
@@ -198,6 +196,7 @@ def generate_channel(simulation_params, num_simulations, num_ues_per_frame, num_
 
     return angles_list, channel_coeff_list
 
+
 def generate_hyper_irsa_frame(simulation_params, num_simulations, num_ues_per_frame, frame_size, probabilities):
     """
     Generate an IRSA frame based on the given simulation parameters.
@@ -233,10 +232,10 @@ def generate_hyper_irsa_frame(simulation_params, num_simulations, num_ues_per_fr
     resource_grids, bits = generate_ues(simulation_params, num_ues_per_frame, num_simulations)
     
     # Generate slot indices based on the given probabilities
-    slot_indices = generate_slot_indices(num_simulations, num_ues_per_frame, frame_size, probabilities)
+    slot_indices, num_replicas = generate_slot_indices(num_simulations, num_ues_per_frame, frame_size, probabilities)
     
     # Generate the channel coefficients for each UE
-    angles, channel_coeff = generate_channel(simulation_params, num_ues_per_frame, num_simulations, frame_size, is_phase_shift_applied)
+    angles, channel_coeff = generate_channel(simulation_params, num_simulations, num_ues_per_frame, num_replicas, is_phase_shift_applied)
     
 
     
@@ -257,11 +256,13 @@ def generate_hyper_irsa_frame(simulation_params, num_simulations, num_ues_per_fr
         
         # Get the slot indices for the current UE
         slot_indices_ue = slot_indices[ue_index]
+        num_replicas_ue = num_replicas[ue_index]
         
         # Allocate the replicas of the current UE in the temporary hyper IRSA frame
-        for replica_index in slot_indices_ue:
+        for replica_index in range(num_replicas_ue):
+            replica_position = slot_indices_ue[replica_index]
             resource_grid_with_channel = resource_grid * channel_coeff_ue[replica_index]
-            ue_hyper_irsa_frame = tf.tensor_scatter_nd_update(ue_hyper_irsa_frame, [[replica_index]], resource_grid_with_channel)
+            ue_hyper_irsa_frame = tf.tensor_scatter_nd_update(ue_hyper_irsa_frame, [[replica_position]], tf.expand_dims(resource_grid_with_channel, axis=0))
         
         # Add the temporary hyper IRSA frame to the output frame
         irsa_hyper_frame += ue_hyper_irsa_frame
@@ -358,7 +359,7 @@ def decode_frame(received_rg, no, num_simulations, frame_size, simulation_params
     # Extract the data symbols from the equalized resource grid
     received_data_rg = tf.gather(received_rg_equalized, data_indices, axis=1)
     # Flatten the received symbols to match the input shape of the demapper
-    received_symbols= tf.reshape(received_symbols, (batch_size, -1))
+    received_symbols= tf.reshape(received_data_rg, (batch_size, -1))
 
     # Demap the received symbols to log-likelihood ratios (LLRs)
     llr = demapper([received_symbols, no])
@@ -401,7 +402,7 @@ def search_new_identified_ues(bits_hat, bits, slot_indices, identified_ues):
                 
     return new_identified_ues, new_identified_positions, new_ues_found
 
-def remove_replicas_of_newlly_identified_ues(y_resource_grids, resourse_grids, slot_indices, new_identified_ues, is_perfect_CSI):
+def remove_replicas_of_newlly_identified_ues(y_resource_grids, resourse_grids, slot_indices, new_identified_ues, is_perfect_SIC, channels):
     """
     Remove the replicas of a UE when it is recognized.
 
@@ -422,7 +423,7 @@ def remove_replicas_of_newlly_identified_ues(y_resource_grids, resourse_grids, s
         for pos in slot_indices[ue]:
             y_replica_slot = y_resource_grids_cleaned[pos]
             
-            if is_perfect_CSI:
+            if is_perfect_SIC:
                 # Extract the Channel coefficient of the replica
                 h_hat_replicas = channels[i]['coeff']
             else:
@@ -432,7 +433,7 @@ def remove_replicas_of_newlly_identified_ues(y_resource_grids, resourse_grids, s
             
             
             clean_slot = y_replica_slot - ue_rg * h_hat_replicas
-            y_resource_grids_cleaned = tf.tensor_scatter_nd_update(y_resource_grids_cleaned, [[pos]], clean_slot)
+            y_resource_grids_cleaned = tf.tensor_scatter_nd_update(y_resource_grids_cleaned, [[pos]], tf.expand_dims(clean_slot, axis=0))
 
     return y_resource_grids_cleaned
 
@@ -457,6 +458,9 @@ def decode_irsa_frame(y_resource_grids, no, simulation_params, resourse_grids, b
         slots_to_decode: List of slots to decode in future passes.
     """
     # Extract necessary parameters from the simulation_params dictionary
+    channel_params = simulation_params["Channel parameters"]
+    is_perfect_SIC = channel_params['is_perfect_SIC']
+    
     num_ues = num_simulations * num_ues_per_frame
 
     # Start decoding the received signal slot by slot
@@ -475,7 +479,7 @@ def decode_irsa_frame(y_resource_grids, no, simulation_params, resourse_grids, b
         new_identified_positions.update(new_positions)
 
         if new_ues_found:
-            y_resource_grids = remove_replicas_of_newlly_identified_ues(y_resource_grids, resourse_grids, slot_indices, new_identified_ues, simulation_params["Channel parameters"]["type"] == "Only Phase Shift")
+            y_resource_grids = remove_replicas_of_newlly_identified_ues(y_resource_grids, resourse_grids, slot_indices, new_identified_ues, is_perfect_SIC, h_hat)
             identified_ues.update(new_identified_ues)
         else:
             print("No new UEs were identified.")
@@ -485,96 +489,133 @@ def decode_irsa_frame(y_resource_grids, no, simulation_params, resourse_grids, b
 
     return list(identified_ues)
 
+def run_simulation(simulation_params, num_simulations, num_ues_per_frame, frame_size, probabilities, ebno_db):
+    """
+    Run a single simulation.
 
+    Args:
+        simulation_params: Dictionary containing all simulation parameters.
+        num_simulations: Number of simulations to run.
+        num_ues_per_frame: Number of UEs per frame.
+        frame_size: Total number of slots in the frame.
+        probabilities: Probabilities for selecting number of replicas.
+        ebno_db: The Eb/No value in dB.
+
+    Returns:
+        identified_ues: List of identified UEs.
+    """
+    # Generate the IRSA frame
+    irsa_hyper_frame, resource_grids, h_ues, replicas_indices, bits = generate_hyper_irsa_frame(simulation_params, num_simulations, num_ues_per_frame, frame_size, probabilities)
+    # Pass the IRSA frame through the AWGN channel
+    received_frame, no = pass_through_awgn(irsa_hyper_frame, ebno_db, simulation_params)
+    # Decode the IRSA frame
+    identified_ues = decode_irsa_frame(received_frame, no, simulation_params, resource_grids, bits, replicas_indices, num_simulations, frame_size, num_ues_per_frame)
+    
+    return identified_ues
+
+#%%
+# Simulation parameters
+simulation_params = {
+    "Carrier parameters": {
+        "num_resource_blocks": 1,
+        "numerology": 0,
+        "pilot_indices": [3, 9],
+        "num_ofdm_symbols": 14
+    },
+    "Transport block parameters": {
+        "num_bits_per_symbol": 2,
+        "coderate": 0.5
+    },
+    "Channel parameters": {
+        "is_phase_shift_applied": True,
+        "is_perfect_SIC": False
+    }
+}
+# Number of UEs per frame
+num_ues_per_frame = 6
+# Number of simulations to run
+num_simulations = 1000
+# Number of slots in the frame
+frame_size = 10
+# Probabilities for selecting number of replicas
+probabilities = [0, 0.3, 0.15, 0.55]
+# Eb/No value in dB
+ebno_db = 100
+
+# Run the simulation
+identified_ues = run_simulation(simulation_params, num_simulations, num_ues_per_frame, frame_size, probabilities, ebno_db)
+# Print the total number of ues and the identified ues
+num_ues = num_simulations * num_ues_per_frame
+print(f"\nTotal number of UEs: {num_ues}")
+print(f"Identified UEs: {len(identified_ues)}")
 
 
 #%%
-# Define a container to save all simulation parameters
+# Plotting the performance of IRSA with varying number of UEs per frame
+# Simulation parameters
 simulation_params = {
     "Carrier parameters": {
-        "numerology": 0,
         "num_resource_blocks": 1,
-        "num_ofdm_symbols": 14,
-        "pilot_indices": [2, 11],
+        "numerology": 0,
+        "pilot_indices": [3, 9],
+        "num_ofdm_symbols": 14
     },
     "Transport block parameters": {
         "num_bits_per_symbol": 2,
-        "coderate": 0.5,
-    },
-    "IRSA Parameters": {
-        "num_slots_per_frame": 10,
-        "num_ues": 6,
-        "max_replicas": 2,  # Add a variable to control the max number of replicas allowed
+        "coderate": 0.5
     },
     "Channel parameters": {
-        "type": "Only Phase Shift",  # Options: "None", "Only Phase Shift"
+        "is_phase_shift_applied": True,
+        "is_perfect_SIC": False
     }
 }
+# Number of simulations to run
+num_simulations = 1000
+# Number of slots in the frame
+frame_size = 15
+# Probabilities for selecting number of replicas
+probabilities = [0, 0.3, 0.15, 0.55]
+# Eb/No value in dB
+ebno_db = 100
 
-# Run the IRSA simulation
-irsa_frame, resource_grid_list, h_ues, replicas_indices_list, original_bits_list = generate_irsa_frame(simulation_params)
-received_frame, no = pass_through_awgn(irsa_frame, 100, simulation_params)
-identified_ues, slots_to_decode = decode_irsa_frame(received_frame, no, simulation_params, resource_grid_list, original_bits_list, replicas_indices_list)
+# Initialize lists to store results
+total_ues_per_frame_list = []
+identified_ues_per_frame_list = []
 
-# Print the transmission report (Add some separation lines for better readability)
-print("\n\n")
-print("=====================================================")
-print("Transmission Report:")
-print(f"Number of UEs: {simulation_params['IRSA Parameters']['num_ues']}")
-print(f"Number of slots per frame: {simulation_params['IRSA Parameters']['num_slots_per_frame']}")
-print(f"Number of identified UEs: {len(identified_ues)}")
-print(f"Identified UEs: {', '.join(map(str, identified_ues))}")
-print("=====================================================")
+# Vary the number of UEs per frame from 1 to frame_size - 1
+for num_ues_per_frame in range(1, frame_size+1):
+    # Run the simulation
+    identified_ues = run_simulation(simulation_params, num_simulations, num_ues_per_frame, frame_size, probabilities, ebno_db)
+    
+    # Total number of UEs per frame
+    total_ues_per_frame = num_ues_per_frame
+    total_ues_per_frame_list.append(total_ues_per_frame)
+    
+    # Number of identified UEs per frame
+    identified_ues_per_frame = len(identified_ues) / num_simulations
+    identified_ues_per_frame_list.append(identified_ues_per_frame)
 
+# Plotting
+plt.figure(figsize=(10, 6))
+plt.plot(total_ues_per_frame_list, identified_ues_per_frame_list, 'bo-', label='Identified UEs per Frame')
+plt.xlabel('Total Number of UEs per Frame')
+plt.ylabel('Number of Identified UEs per Frame')
+plt.title('Performance of IRSA with Varying Number of UEs per Frame')
+plt.legend()
+plt.grid(True)
+plt.show()
 
-# Plot the percen
+#%%
+# Save the statistics to a CSV file
+import csv
 
-# %%
-
-# Define a container to save all simulation parameters
-simulation_params = {
-    "Carrier parameters": {
-        "numerology": 0,
-        "num_resource_blocks": 1,
-        "num_ofdm_symbols": 14,
-        "pilot_indices": [2, 11],
-    },
-    "Transport block parameters": {
-        "num_bits_per_symbol": 2,
-        "coderate": 0.5,
-    },
-    "IRSA Parameters": {
-        "num_slots_per_frame": 10,
-        "num_ues": None,
-        "max_replicas": 2,  # Add a variable to control the max number of replicas allowed
-    },
-    "Channel parameters": {
-        "type": "Only Phase Shift",  # Options: "None", "Only Phase Shift"
-    }
-}
-
-# Plot the performance of the IRSA decoder for varying number of UEs
-def plot_performance_varying_ues(simulation_params, max_num_ues, step=1):
-    num_slots_per_frame = simulation_params["IRSA Parameters"]["num_slots_per_frame"]
-    identified_ues_list = []
-
-    for num_ues in range(1, max_num_ues + 1, step):
-        simulation_params["IRSA Parameters"]["num_ues"] = num_ues
-        irsa_frame, resource_grid_list, h_ues, replicas_indices_list, original_bits_list = generate_irsa_frame(simulation_params)
-        received_frame, no = pass_through_awgn(irsa_frame, 100, simulation_params)
-        identified_ues, slots_to_decode = decode_irsa_frame(received_frame, no, simulation_params, resource_grid_list, original_bits_list, replicas_indices_list)
-        identified_ues_list.append(len(identified_ues))
-        print(f"Total UEs: {num_ues}, Identified UEs: {len(identified_ues)}")
-
-    plt.figure(figsize=(10, 6))
-    plt.plot(range(1, max_num_ues + 1, step), identified_ues_list, marker='o', linestyle='-', color='b')
-    plt.xlabel("Total Number of UEs")
-    plt.ylabel("Number of Identified UEs")
-    plt.title(f"Performance of IRSA Decoder (Fixed {num_slots_per_frame} Slots per Frame)")
-    plt.grid(True)
-    plt.show()
-
-# Set the maximum number of UEs to test
-max_num_ues = 10
-plot_performance_varying_ues(simulation_params, max_num_ues)
-# %%
+# File path
+file_path = 'irsa_performance.csv'
+# Write the statistics to the CSV file
+with open(file_path, mode='w', newline='') as file:
+    writer = csv.writer(file)
+    writer.writerow(['Total UEs per Frame', 'Identified UEs per Frame'])
+    for i in range(len(total_ues_per_frame_list)):
+        writer.writerow([total_ues_per_frame_list[i], identified_ues_per_frame_list[i]])
+        
+print(f"Statistics saved to {file_path}")
