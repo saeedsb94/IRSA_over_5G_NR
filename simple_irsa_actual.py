@@ -113,7 +113,6 @@ avg_decoded = simul_nb_decoded(90, 100, 10, [0,0,1])
 print("avg decoded=%s" %avg_decoded, " for 10 trials with N=90 M=100 degree=2"  )
 
 #%%
-
 L = 1000 # number of simulations
 M = 15 # number of slots
 # lambda_dist = np_sol_dist # [0,0,1]
@@ -124,16 +123,16 @@ xl = []
 yl = []
 for N in range(1,M+1,1): # number of users
     avg_decoded = simul_nb_decoded(N, M, L, lambda_dist)
-    xl.append(N)
-    yl.append(avg_decoded)    
+    xl.append(N / M)  # Normalize N by M to get load
+    yl.append(avg_decoded / M)  # Normalize avg_decoded by N to get throughput
 xarray = np.array(xl)
 yarray = np.array(yl)
 
 # Create a new figure
 plt.figure()
 
-# Plot the first curve
-plt.plot(xarray, yarray, ".-", label="simulated %s" % lambda_dist)
+# Plot the new curve
+plt.plot(xarray, yarray, ".-", label="Perfect SIC")
 
 # Load the data from irsa_performance.csv
 data = pd.read_csv('irsa_performance.csv')
@@ -142,10 +141,25 @@ data = pd.read_csv('irsa_performance.csv')
 num_users = data['num_users'].values
 avg_decoded_imperfect_sic = data['avg_decoded_imperfect_sic'].values
 
-# Plot the new curve on the same figure
-plt.plot(num_users, avg_decoded_imperfect_sic, ".-", label="imperfect SIC")
+# Normalize the data for load and throughput
+load = num_users / M
+throughput = avg_decoded_imperfect_sic / M
 
-# Add legend, grid, and show the plot
+# Plot the new curve on the same figure
+plt.plot(load, throughput, ".-", label="imperfect SIC")
+
+# Add labels, legend, grid, and show the plot
+plt.xlabel("Load")
+plt.ylabel("Throughput")
 plt.legend(loc="best")
 plt.grid()
+
+# Save the figure
+plt.savefig('irsa_performance_plot.png')
+
 plt.show()
+
+# %%
+# Save the figure# %%
+
+# %%

@@ -267,7 +267,9 @@ def generate_hyper_irsa_frame(simulation_params, num_simulations, num_ues_per_fr
         # Add the temporary hyper IRSA frame to the output frame
         irsa_hyper_frame += ue_hyper_irsa_frame
         
-    return irsa_hyper_frame, resource_grids, channel_coeff, slot_indices, bits
+    return irsa_hyper_frame, resource_grids, channel_coeff, slot_indices,num_replicas, bits
+
+
                 
 def pass_through_awgn(irsa_frame, ebno_db, simulation_params):
     """
@@ -402,7 +404,7 @@ def search_new_identified_ues(bits_hat, bits, slot_indices, identified_ues):
                 
     return new_identified_ues, new_identified_positions, new_ues_found
 
-def remove_replicas_of_newlly_identified_ues(y_resource_grids, resourse_grids, slot_indices, new_identified_ues, is_perfect_SIC, channels):
+def remove_replicas_of_newlly_identified_ues(y_resource_grids, new_identified_ues, resourse_grids, slot_indices, num_replicas, channels, is_perfect_SIC):
     """
     Remove the replicas of a UE when it is recognized.
 
@@ -420,24 +422,28 @@ def remove_replicas_of_newlly_identified_ues(y_resource_grids, resourse_grids, s
     for ue in new_identified_ues:
         # Extract the resource grid of the current ue
         ue_rg=resourse_grids[ue]
-        for pos in slot_indices[ue]:
-            y_replica_slot = y_resource_grids_cleaned[pos]
-            
+        ue_channels=channels[ue]
+        ue_slot_indices = slot_indices[ue]
+        ue_num_replicas = num_replicas[ue]
+        for replica_ind in range(ue_num_replicas):
+            slot_indice=ue_slot_indices[replica_ind]
+            y_replica_slot = y_resource_grids_cleaned[slot_indice]
             if is_perfect_SIC:
                 # Extract the Channel coefficient of the replica
-                h_hat_replicas = channels[i]['coeff']
+                
+                h_hat_replica = ue_channels[replica_ind]
             else:
                 # Estimate the channel coefficient of the replica
                 phi_hat = tf.math.angle(tf.math.reduce_sum(y_replica_slot * tf.math.conj(ue_rg)))
-                h_hat_replicas = tf.complex(tf.cos(phi_hat), tf.sin(phi_hat))
+                h_hat_replica = tf.complex(tf.cos(phi_hat), tf.sin(phi_hat))
             
             
-            clean_slot = y_replica_slot - ue_rg * h_hat_replicas
-            y_resource_grids_cleaned = tf.tensor_scatter_nd_update(y_resource_grids_cleaned, [[pos]], tf.expand_dims(clean_slot, axis=0))
+            clean_slot = y_replica_slot - ue_rg * h_hat_replica
+            y_resource_grids_cleaned = tf.tensor_scatter_nd_update(y_resource_grids_cleaned, [[slot_indice]], tf.expand_dims(clean_slot, axis=0))
 
     return y_resource_grids_cleaned
 
-def decode_irsa_frame(y_resource_grids, no, simulation_params, resourse_grids, bits, slot_indices, num_simulations, frame_size, num_ues_per_frame): 
+def decode_irsa_frame(y_resource_grids, no, simulation_params, resourse_grids, bits, slot_indices,num_replicas, num_simulations, frame_size, num_ues_per_frame, channels):
     """
     Decode an IRSA frame.
 
@@ -479,7 +485,7 @@ def decode_irsa_frame(y_resource_grids, no, simulation_params, resourse_grids, b
         new_identified_positions.update(new_positions)
 
         if new_ues_found:
-            y_resource_grids = remove_replicas_of_newlly_identified_ues(y_resource_grids, resourse_grids, slot_indices, new_identified_ues, is_perfect_SIC, h_hat)
+            y_resource_grids = remove_replicas_of_newlly_identified_ues(y_resource_grids, new_identified_ues, resourse_grids, slot_indices, num_replicas, channels, is_perfect_SIC)
             identified_ues.update(new_identified_ues)
         else:
             print("No new UEs were identified.")
@@ -488,7 +494,6 @@ def decode_irsa_frame(y_resource_grids, no, simulation_params, resourse_grids, b
         pass_num += 1
 
     return list(identified_ues)
-
 def run_simulation(simulation_params, num_simulations, num_ues_per_frame, frame_size, probabilities, ebno_db):
     """
     Run a single simulation.
@@ -505,11 +510,11 @@ def run_simulation(simulation_params, num_simulations, num_ues_per_frame, frame_
         identified_ues: List of identified UEs.
     """
     # Generate the IRSA frame
-    irsa_hyper_frame, resource_grids, h_ues, replicas_indices, bits = generate_hyper_irsa_frame(simulation_params, num_simulations, num_ues_per_frame, frame_size, probabilities)
+    irsa_hyper_frame, resource_grids, h_ues, replicas_indices, num_replicas, bits = generate_hyper_irsa_frame(simulation_params, num_simulations, num_ues_per_frame, frame_size, probabilities)
     # Pass the IRSA frame through the AWGN channel
     received_frame, no = pass_through_awgn(irsa_hyper_frame, ebno_db, simulation_params)
     # Decode the IRSA frame
-    identified_ues = decode_irsa_frame(received_frame, no, simulation_params, resource_grids, bits, replicas_indices, num_simulations, frame_size, num_ues_per_frame)
+    identified_ues = decode_irsa_frame(received_frame, no, simulation_params, resource_grids, bits, replicas_indices, num_replicas, num_simulations, frame_size, num_ues_per_frame, h_ues)
     
     return identified_ues
 
@@ -528,13 +533,13 @@ simulation_params = {
     },
     "Channel parameters": {
         "is_phase_shift_applied": True,
-        "is_perfect_SIC": False
+        "is_perfect_SIC": True
     }
 }
 # Number of UEs per frame
-num_ues_per_frame = 6
+num_ues_per_frame = 1
 # Number of simulations to run
-num_simulations = 1000
+num_simulations = 10
 # Number of slots in the frame
 frame_size = 10
 # Probabilities for selecting number of replicas
@@ -608,13 +613,20 @@ plt.show()
 #%%
 # Save the statistics to a CSV file
 import csv
+from datetime import datetime
 
-# File path
-file_path = 'irsa_performance.csv'
+# Get the current time
+current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+# File path with time
+file_path = f'irsa_performance_perfect_SIC.csv'
+
 # Write the statistics to the CSV file
 with open(file_path, mode='w', newline='') as file:
     writer = csv.writer(file)
-    writer.writerow(['Total UEs per Frame', 'Identified UEs per Frame'])
+    
+    # Write the statistics
+    writer.writerow(['num_users', 'avg_decoded_imperfect_sic'])
     for i in range(len(total_ues_per_frame_list)):
         writer.writerow([total_ues_per_frame_list[i], identified_ues_per_frame_list[i]])
         

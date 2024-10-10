@@ -22,6 +22,7 @@ from sionna.channel import AWGN
 from sionna.utils.metrics import compute_ber, compute_bler
 from sionna.signal import Upsampling, Downsampling, RootRaisedCosineFilter, empirical_psd, empirical_aclr
 import os
+import json
 
 # Allow memory growth for GPU
 gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -391,10 +392,10 @@ print(f"Average Residual Interference Energy: {results['avg_residual_interferenc
 print("=====================================================")
 
 # %%
-# Plot the BER, BLER, and residual interference energy vs number of UEs for high Eb/No
-high_ebno = 100  # Define a high Eb/No value
+# Plot the BER, BLER, and residual interference energy vs number of interfered UEs for high Eb/No
+high_ebno = 10  # Define a high Eb/No value
 batch_size = 10000
-num_ues_values = np.arange(1, 15, dtype=int)
+num_ues_values = range(0, 15)
 
 ber_values_high_ebno = []
 bler_values_high_ebno = []
@@ -403,7 +404,7 @@ success_rate_values_high_ebno = []
 
 # Run the simulation for each number of UEs at the high Eb/No value
 for num_ues in num_ues_values:
-    results = run_simulation(simulation_params, high_ebno, batch_size, num_ues)
+    results = run_simulation(simulation_params, high_ebno, batch_size, num_ues+1)
     ber_values_high_ebno.append(results['ber'])
     bler_values_high_ebno.append(results['bler'])
     residual_interference_values_high_ebno.append(results['avg_residual_interference'])
@@ -411,60 +412,72 @@ for num_ues in num_ues_values:
     success_rate_values_high_ebno.append(success_rate)
     print(f"Num UEs: {num_ues}, Eb/No: {high_ebno} dB, BER: {results['ber']}, BLER: {results['bler']}, Residual Interference: {results['avg_residual_interference']}, Success Rate: {success_rate}")
 
-# Plot the BER vs number of UEs
-plt.figure()
-plt.plot(num_ues_values, ber_values_high_ebno, marker='o')
-plt.xlabel('Number of UEs')
-plt.ylabel('Bit Error Rate (BER)')
-plt.title(f'BER vs Number of UEs at Eb/No = {high_ebno} dB')
-plt.xticks(num_ues_values)  # Ensure integer ticks for number of UEs
-plt.grid(True)
+# Plot the BER vs number of interfered UEs
 # Create a directory to save the figures if it doesn't exist
 output_dir = 'simulation_results'
 os.makedirs(output_dir, exist_ok=True)
 
-# Plot the BER vs number of UEs
+# Plot the BER vs number of interfered UEs
 plt.figure()
 plt.plot(num_ues_values, ber_values_high_ebno, marker='o')
-plt.xlabel('Number of UEs')
-plt.ylabel('Bit Error Rate (BER)')
-plt.title(f'BER vs Number of UEs at Eb/No = {high_ebno} dB')
+plt.xlabel('Number of Interfered UEs')
+plt.ylabel('BER')
+plt.title('BER at Eb/No = 10 dB')
 plt.xticks(num_ues_values)  # Ensure integer ticks for number of UEs
 plt.grid(True)
-plt.savefig(os.path.join(output_dir, 'ber_vs_num_ues_high_ebno.png'))
+plt.savefig(os.path.join(output_dir, 'ber_vs_interfered_ues_high_ebno.png'))
 plt.show()
 
-# Plot the BLER vs number of UEs
+# Plot the BLER vs number of interfered UEs
 plt.figure()
 plt.plot(num_ues_values, bler_values_high_ebno, marker='o')
-plt.xlabel('Number of UEs')
-plt.ylabel('Block Error Rate (BLER)')
-plt.title(f'BLER vs Number of UEs at Eb/No = {high_ebno} dB')
+plt.xlabel('Number of Interfered UEs')
+plt.ylabel('BLER')
+plt.title('BLER at Eb/No = 10 dB')
 plt.xticks(num_ues_values)  # Ensure integer ticks for number of UEs
 plt.grid(True)
-plt.savefig(os.path.join(output_dir, 'bler_vs_num_ues_high_ebno.png'))
+plt.savefig(os.path.join(output_dir, 'bler_vs_interfered_ues_high_ebno.png'))
 plt.show()
 
-# Plot the residual interference energy vs number of UEs
+# Plot the residual interference energy vs number of interfered UEs
 plt.figure()
 plt.plot(num_ues_values, residual_interference_values_high_ebno, marker='o')
-plt.xlabel('Number of UEs')
-plt.ylabel('Residual Interference Energy')
-plt.title(f'Residual Interference Energy vs Number of UEs at Eb/No = {high_ebno} dB')
+plt.xlabel('Number of Interfered UEs')
+plt.ylabel('SIC error')
+plt.title('Residual Interference Energy')
 plt.xticks(num_ues_values)  # Ensure integer ticks for number of UEs
 plt.grid(True)
-plt.savefig(os.path.join(output_dir, 'residual_interference_vs_num_ues_high_ebno.png'))
+plt.savefig(os.path.join(output_dir, 'residual_interference_vs_interfered_ues_high_ebno.png'))
 plt.show()
 
-# Plot the success rate vs number of UEs
+# Plot the success rate vs number of interfered UEs
 plt.figure()
 plt.plot(num_ues_values, success_rate_values_high_ebno, marker='o')
-plt.xlabel('Number of UEs')
+plt.xlabel('Number of Interfered UEs')
 plt.ylabel('Success Rate')
-plt.title(f'Success Rate vs Number of UEs at Eb/No = {high_ebno} dB')
+plt.title('Success Rate vs Interfered UEs')
 plt.xticks(num_ues_values)  # Ensure integer ticks for number of UEs
 plt.grid(True)
-plt.savefig(os.path.join(output_dir, 'success_rate_vs_num_ues_high_ebno.png'))
+plt.savefig(os.path.join(output_dir, 'success_rate_vs_interfered_ues_high_ebno.png'))
 plt.show()
 
+# %%
+import json
+# Save the data to a file
+results_data = {
+    "num_ues_values": num_ues_values.tolist(),
+    "ber_values_high_ebno": ber_values_high_ebno,
+    "bler_values_high_ebno": bler_values_high_ebno,
+    "residual_interference_values_high_ebno": residual_interference_values_high_ebno,
+    "success_rate_values_high_ebno": success_rate_values_high_ebno
+}
+
+# Define the output file path
+output_file_path = os.path.join(output_dir, 'simulation_results_high_ebno.json')
+
+# Save the results to a JSON file
+with open(output_file_path, 'w') as f:
+    json.dump(results_data, f)
+
+print(f"Simulation results saved to {output_file_path}")
 # %%
