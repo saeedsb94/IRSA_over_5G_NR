@@ -3,10 +3,30 @@
 # Author: Cedric Adjih - Inria - 2017-2021
 #---------------------------------------------------------------------------
 #%%
+# Importing the required libraries
 
-import matplotlib.pyplot as plt
+import sionna as sn
+
 import numpy as np
-import pandas as pd
+import tensorflow as tf
+# For the implementation of the Keras models
+from tensorflow.keras import Model
+
+# also try %matplotlib widget
+import matplotlib.pyplot as plt
+
+# for performance measurements
+import time
+
+# Importing the required classes from the sionna library
+from sionna.mapping import Constellation, Mapper, Demapper
+from sionna.utils import BinarySource, ebnodb2no
+from sionna.channel import AWGN
+from sionna.utils.metrics import compute_ber, compute_bler
+from sionna.signal import Upsampling, Downsampling, RootRaisedCosineFilter, empirical_psd, empirical_aclr
+import os
+import json
+
 
 #%%
 # Distributions for degree selection: the degree always starts from 0 

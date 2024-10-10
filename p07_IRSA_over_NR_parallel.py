@@ -581,24 +581,32 @@ frame_size = 15
 # Probabilities for selecting number of replicas
 probabilities = [0, 0.3, 0.15, 0.55]
 # Eb/No value in dB
-ebno_db = 100
+ebno_db = 10
 
 # Initialize lists to store results
 total_ues_per_frame_list = []
 identified_ues_per_frame_list = []
 
-# Vary the number of UEs per frame from 1 to frame_size - 1
-for num_ues_per_frame in range(1, frame_size+1):
-    # Run the simulation
-    identified_ues = run_simulation(simulation_params, num_simulations, num_ues_per_frame, frame_size, probabilities, ebno_db)
-    
-    # Total number of UEs per frame
-    total_ues_per_frame = num_ues_per_frame
-    total_ues_per_frame_list.append(total_ues_per_frame)
-    
-    # Number of identified UEs per frame
-    identified_ues_per_frame = len(identified_ues) / num_simulations
-    identified_ues_per_frame_list.append(identified_ues_per_frame)
+# Open log file
+log_file_path = 'irsa_simulation_log.txt'
+with open(log_file_path, 'w') as log_file:
+    # Vary the number of UEs per frame from 1 to frame_size - 1
+    for num_ues_per_frame in range(1, frame_size+1):
+        # Run the simulation
+        identified_ues = run_simulation(simulation_params, num_simulations, num_ues_per_frame, frame_size, probabilities, ebno_db)
+        
+        # Total number of UEs per frame
+        total_ues_per_frame = num_ues_per_frame
+        total_ues_per_frame_list.append(total_ues_per_frame)
+        
+        # Number of identified UEs per frame
+        identified_ues_per_frame = len(identified_ues) / num_simulations
+        identified_ues_per_frame_list.append(identified_ues_per_frame)
+        
+        # Print and log the report
+        report = f"Number of UEs per Frame: {total_ues_per_frame}, Identified UEs per Frame: {identified_ues_per_frame}"
+        print(report)
+        log_file.write(report + '\n')
 
 # Plotting
 plt.figure(figsize=(10, 6))
@@ -619,7 +627,7 @@ from datetime import datetime
 current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 # File path with time
-file_path = f'irsa_performance_perfect_SIC.csv'
+file_path = f'irsa_performance_imperfect_SIC_{current_time}.csv'
 
 # Write the statistics to the CSV file
 with open(file_path, mode='w', newline='') as file:
